@@ -29,7 +29,6 @@ import {
     Eraser,
     FileImage,
     RectangleHorizontal,
-    RectangleVertical,
     ShieldAlert,
     ShieldCheck,
     Sparkles,
@@ -71,20 +70,26 @@ const RadioItemWithIcon = ({
     value,
     id,
     label,
-    Icon
+    Icon,
+    disabled = false
 }: {
     value: string;
     id: string;
     label: string;
     Icon: React.ElementType;
+    disabled?: boolean;
 }) => (
-    <div className='flex items-center space-x-2'>
+    <div className={`flex items-center space-x-2 ${disabled ? 'opacity-40' : ''}`}>
         <RadioGroupItem
             value={value}
             id={id}
+            data-testid={id}
+            disabled={disabled}
             className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
         />
-        <Label htmlFor={id} className='flex cursor-pointer items-center gap-2 text-base text-white/80'>
+        <Label
+            htmlFor={id}
+            className={`flex items-center gap-2 text-base text-white/80 ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
             <Icon className='h-5 w-5 text-white/60' />
             {label}
         </Label>
@@ -92,9 +97,9 @@ const RadioItemWithIcon = ({
 );
 
 const SIZE_PRESETS: { value: SizePreset; label: string; Icon: React.ElementType }[] = [
-    { value: 'square', label: 'Square', Icon: Square },
-    { value: 'landscape', label: 'Landscape', Icon: RectangleHorizontal },
-    { value: 'portrait', label: 'Portrait', Icon: RectangleVertical }
+    { value: 'square-1k', label: '1024×1024', Icon: Square },
+    { value: 'widescreen-draft', label: '1536×864（16:9 草稿）', Icon: RectangleHorizontal },
+    { value: 'widescreen-2k', label: '2048×1152（16:9 2K）', Icon: RectangleHorizontal }
 ];
 
 export function ImageOptions({
@@ -122,6 +127,7 @@ export function ImageOptions({
     const id = (suffix: string) => `${idPrefix}-${suffix}`;
     const showExtendedQuality = supportsExtendedQuality(model);
     const showCompression = outputFormat === 'jpeg' || outputFormat === 'webp';
+    const transparentSelected = background === 'transparent';
 
     // xhigh/max only exist on gpt-image-2.5; reset when switching to a model that rejects them
     React.useEffect(() => {
@@ -129,6 +135,19 @@ export function ImageOptions({
             setQuality('auto');
         }
     }, [showExtendedQuality, quality, setQuality]);
+
+    React.useEffect(() => {
+        if (background === 'transparent' && outputFormat !== 'png') {
+            setOutputFormat('png');
+        }
+    }, [background, outputFormat, setOutputFormat]);
+
+    const handleBackgroundChange = (value: ImageBackground) => {
+        setBackground(value);
+        if (value === 'transparent') {
+            setOutputFormat('png');
+        }
+    };
 
     return (
         <>
@@ -219,7 +238,7 @@ export function ImageOptions({
                     disabled={disabled}
                     className='flex flex-wrap gap-x-5 gap-y-3'>
                     <RadioItemWithIcon value='auto' id={id('quality-auto')} label='Auto' Icon={Sparkles} />
-                    <RadioItemWithIcon value='low' id={id('quality-low')} label='Low' Icon={Tally1} />
+                    <RadioItemWithIcon value='low' id={id('quality-low')} label='Low（低成本）' Icon={Tally1} />
                     <RadioItemWithIcon value='medium' id={id('quality-medium')} label='Medium' Icon={Tally2} />
                     <RadioItemWithIcon value='high' id={id('quality-high')} label='High' Icon={Tally3} />
                     {showExtendedQuality && (
@@ -235,7 +254,7 @@ export function ImageOptions({
                 <Label className='block text-white'>Background</Label>
                 <RadioGroup
                     value={background}
-                    onValueChange={(value) => setBackground(value as ImageBackground)}
+                    onValueChange={(value) => handleBackgroundChange(value as ImageBackground)}
                     disabled={disabled}
                     className='flex flex-wrap gap-x-5 gap-y-3'>
                     <RadioItemWithIcon value='auto' id={id('bg-auto')} label='Auto' Icon={Sparkles} />
@@ -247,6 +266,9 @@ export function ImageOptions({
                         Icon={Eraser}
                     />
                 </RadioGroup>
+                {transparentSelected && (
+                    <p className='text-xs text-emerald-400'>透明背景已启用，输出格式已联动为 PNG。</p>
+                )}
             </div>
 
             <div className='space-y-3'>
@@ -257,9 +279,24 @@ export function ImageOptions({
                     disabled={disabled}
                     className='flex flex-wrap gap-x-5 gap-y-3'>
                     <RadioItemWithIcon value='png' id={id('format-png')} label='PNG' Icon={FileImage} />
-                    <RadioItemWithIcon value='jpeg' id={id('format-jpeg')} label='JPEG' Icon={FileImage} />
-                    <RadioItemWithIcon value='webp' id={id('format-webp')} label='WebP' Icon={FileImage} />
+                    <RadioItemWithIcon
+                        value='jpeg'
+                        id={id('format-jpeg')}
+                        label='JPEG'
+                        Icon={FileImage}
+                        disabled={transparentSelected}
+                    />
+                    <RadioItemWithIcon
+                        value='webp'
+                        id={id('format-webp')}
+                        label='WebP'
+                        Icon={FileImage}
+                        disabled={transparentSelected}
+                    />
                 </RadioGroup>
+                {transparentSelected && (
+                    <p className='text-xs text-white/50'>透明背景仅支持 PNG（棋盘格只用于预览，不写入图片）。</p>
+                )}
             </div>
 
             {showCompression && (

@@ -5,6 +5,7 @@ import { GenerationForm, type GenerationFormData } from '@/components/generation
 import { HistoryPanel } from '@/components/history-panel';
 import { ImageOutput } from '@/components/image-output';
 import { PasswordDialog } from '@/components/password-dialog';
+import { RequestConfirmationDialog } from '@/components/request-confirmation-dialog';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { calculateApiCost, type ApiUsage, type CostDetails } from '@/lib/cost-utils';
 import { db, type ImageRecord } from '@/lib/db';
@@ -17,12 +18,15 @@ import {
     type ImageOutputFormat,
     type ImageQuality
 } from '@/lib/models';
-import { getPresetDimensions } from '@/lib/size-utils';
+import type { RequestSnapshot } from '@/lib/request-types';
+import { DEFAULT_SIZE_PRESET, getPresetDimensions } from '@/lib/size-utils';
 import { useLiveQuery } from 'dexie-react-hooks';
 import * as React from 'react';
 
 type HistoryImage = {
     filename: string;
+    width?: number | null;
+    height?: number | null;
 };
 
 export type HistoryMetadata = {
@@ -39,6 +43,14 @@ export type HistoryMetadata = {
     output_format?: ImageOutputFormat;
     /** Absent on entries written before the field existed; those were all produced by gpt-image-1. */
     model?: HistoryGptImageModel;
+    size?: string;
+    n?: number;
+    usage?: ApiUsage | null;
+    requestId?: string;
+    openaiRequestId?: string | null;
+    metadataFile?: string | null;
+    isMock?: boolean;
+    archiveWarning?: string | null;
 };
 
 type DrawnPoint = {
@@ -72,6 +84,36 @@ type ApiImageResponseItem = {
     b64_json?: string;
     output_format: string;
     path?: string;
+    width?: number | null;
+    height?: number | null;
+};
+
+type ImageApiResponse = {
+    images?: ApiImageResponseItem[];
+    usage?: ApiUsage | null;
+    usage_missing?: boolean;
+    request_id?: string;
+    openai_request_id?: string | null;
+    metadata_file?: string | null;
+    metadata_error?: string | null;
+    warnings?: string[];
+    mock?: boolean;
+    error?: string;
+};
+
+type ImageApiStatus = {
+    enabled: boolean;
+    apiKeyConfigured: boolean;
+    mock: boolean;
+};
+
+type RequestResultMeta = {
+    requestId?: string;
+    openaiRequestId?: string | null;
+    metadataFile?: string | null;
+    metadataError?: string | null;
+    mock?: boolean;
+    warnings?: string[];
 };
 
 export default function HomePage() {
@@ -82,14 +124,18 @@ export default function HomePage() {
     const [generationStartTime, setGenerationStartTime] = React.useState<number | null>(null);
     const [isSendingToEdit, setIsSendingToEdit] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
+    const [warning, setWarning] = React.useState<string | null>(null);
+    const [imageApiStatus, setImageApiStatus] = React.useState<ImageApiStatus | null>(null);
     const [latestImageBatch, setLatestImageBatch] = React.useState<{ path: string; filename: string }[] | null>(null);
     const [imageOutputView, setImageOutputView] = React.useState<'grid' | number>('grid');
+    const [latestOutputIsTransparent, setLatestOutputIsTransparent] = React.useState(false);
     const [history, setHistory] = React.useState<HistoryMetadata[]>([]);
     const [isInitialLoad, setIsInitialLoad] = React.useState(true);
     const blobUrlCacheRef = React.useRef<Map<string, string>>(new Map());
+    const inFlightRef = React.useRef(false);
+    const [pendingRequest, setPendingRequest] = React.useState<RequestSnapshot | null>(null);
     const [isPasswordDialogOpen, setIsPasswordDialogOpen] = React.useState(false);
     const [passwordDialogContext, setPasswordDialogContext] = React.useState<'initial' | 'retry'>('initial');
-    const [lastApiCallArgs, setLastApiCallArgs] = React.useState<[GenerationFormData | EditingFormData] | null>(null);
     const [skipDeleteConfirmation, setSkipDeleteConfirmation] = React.useState<boolean>(false);
     const [itemToDeleteConfirm, setItemToDeleteConfirm] = React.useState<HistoryMetadata | null>(null);
     const [dialogCheckboxStateSkipConfirm, setDialogCheckboxStateSkipConfirm] = React.useState<boolean>(false);
@@ -99,11 +145,10 @@ export default function HomePage() {
     const [editImageFiles, setEditImageFiles] = React.useState<File[]>([]);
     const [editSourceImagePreviewUrls, setEditSourceImagePreviewUrls] = React.useState<string[]>([]);
     const [editPrompt, setEditPrompt] = React.useState('');
-    const [editN, setEditN] = React.useState([1]);
-    const [editSize, setEditSize] = React.useState<EditingFormData['size']>('auto');
+    const [editSize, setEditSize] = React.useState<EditingFormData['size']>(DEFAULT_SIZE_PRESET);
     const [editCustomWidth, setEditCustomWidth] = React.useState<number>(1024);
     const [editCustomHeight, setEditCustomHeight] = React.useState<number>(1024);
-    const [editQuality, setEditQuality] = React.useState<EditingFormData['quality']>('auto');
+    const [editQuality, setEditQuality] = React.useState<EditingFormData['quality']>('low');
     const [editOutputFormat, setEditOutputFormat] = React.useState<EditingFormData['output_format']>('png');
     const [editCompression, setEditCompression] = React.useState([100]);
     const [editBackground, setEditBackground] = React.useState<EditingFormData['background']>('auto');
@@ -120,23 +165,16 @@ export default function HomePage() {
 
     const [genModel, setGenModel] = React.useState<GenerationFormData['model']>(DEFAULT_GPT_IMAGE_MODEL);
     const [genPrompt, setGenPrompt] = React.useState('');
-    const [genN, setGenN] = React.useState([1]);
-    const [genSize, setGenSize] = React.useState<GenerationFormData['size']>('auto');
+    const [genSize, setGenSize] = React.useState<GenerationFormData['size']>(DEFAULT_SIZE_PRESET);
     const [genCustomWidth, setGenCustomWidth] = React.useState<number>(1024);
     const [genCustomHeight, setGenCustomHeight] = React.useState<number>(1024);
-    const [genQuality, setGenQuality] = React.useState<GenerationFormData['quality']>('auto');
+    const [genQuality, setGenQuality] = React.useState<GenerationFormData['quality']>('low');
     const [genOutputFormat, setGenOutputFormat] = React.useState<GenerationFormData['output_format']>('png');
     const [genCompression, setGenCompression] = React.useState([100]);
     const [genBackground, setGenBackground] = React.useState<GenerationFormData['background']>('auto');
     const [genModeration, setGenModeration] = React.useState<GenerationFormData['moderation']>('auto');
 
     const [editModel, setEditModel] = React.useState<EditingFormData['model']>(DEFAULT_GPT_IMAGE_MODEL);
-
-    // Streaming state (shared between generate and edit modes)
-    const [enableStreaming, setEnableStreaming] = React.useState(false);
-    const [partialImages, setPartialImages] = React.useState<1 | 2 | 3>(2);
-    // Streaming preview images (base64 data URLs for partial images during streaming)
-    const [streamingPreviewImages, setStreamingPreviewImages] = React.useState<Map<number, string>>(new Map());
 
     const getImageSrc = React.useCallback(
         (filename: string): string | undefined => {
@@ -207,6 +245,11 @@ export default function HomePage() {
                 }
                 const data = await response.json();
                 setIsPasswordRequiredByBackend(data.passwordRequired);
+                setImageApiStatus({
+                    enabled: data.imageApiEnabled === true,
+                    apiKeyConfigured: data.apiKeyConfigured === true,
+                    mock: data.imageApiMock === true
+                });
             } catch (error) {
                 console.error('Error fetching auth status:', error);
                 setIsPasswordRequiredByBackend(false);
@@ -325,9 +368,6 @@ export default function HomePage() {
             setClientPasswordHash(hash);
             setError(null);
             setIsPasswordDialogOpen(false);
-            if (passwordDialogContext === 'retry' && lastApiCallArgs) {
-                await handleApiCall(...lastApiCallArgs);
-            }
         } catch (e) {
             console.error('Error hashing password:', e);
             setError('Failed to save password due to a hashing error.');
@@ -346,27 +386,40 @@ export default function HomePage() {
         return 'image/png';
     };
 
-    // Shared tail for streamed and non-streamed responses: persist blobs (indexeddb mode), show the batch, record history.
+    // Persist blobs (indexeddb mode), show the batch, and record history from the confirmed snapshot.
     const processApiImages = async (
         images: ApiImageResponseItem[],
-        usage: ApiUsage | undefined,
-        durationMs: number
+        usage: ApiUsage | null | undefined,
+        durationMs: number,
+        snapshot: RequestSnapshot,
+        meta: RequestResultMeta
     ) => {
-        const isGenerate = mode === 'generate';
-        const currentModel = isGenerate ? genModel : editModel;
+        const warnings = meta.warnings ?? [];
         const newHistoryEntry: HistoryMetadata = {
             timestamp: Date.now(),
-            images: images.map((img) => ({ filename: img.filename })),
+            images: images.map((img) => ({
+                filename: img.filename,
+                width: img.width ?? null,
+                height: img.height ?? null
+            })),
             storageModeUsed: effectiveStorageModeClient,
             durationMs,
-            quality: isGenerate ? genQuality : editQuality,
-            background: isGenerate ? genBackground : editBackground,
-            moderation: isGenerate ? genModeration : editModeration,
-            output_format: isGenerate ? genOutputFormat : editOutputFormat,
-            prompt: isGenerate ? genPrompt : editPrompt,
-            mode,
-            costDetails: calculateApiCost(usage, currentModel),
-            model: currentModel
+            quality: snapshot.quality,
+            background: snapshot.background,
+            moderation: snapshot.moderation,
+            output_format: snapshot.output_format,
+            prompt: snapshot.prompt,
+            mode: snapshot.mode,
+            costDetails: calculateApiCost(usage, snapshot.model),
+            model: snapshot.model,
+            size: snapshot.size,
+            n: 1,
+            usage: usage ?? null,
+            requestId: meta.requestId,
+            openaiRequestId: meta.openaiRequestId ?? null,
+            metadataFile: meta.metadataFile ?? null,
+            isMock: !!meta.mock,
+            archiveWarning: meta.metadataError ?? null
         };
 
         let newImageBatchPromises: Promise<{ path: string; filename: string } | null>[];
@@ -412,184 +465,175 @@ export default function HomePage() {
 
         setLatestImageBatch(processedImages);
         setImageOutputView(processedImages.length > 1 ? 'grid' : 0);
-        setStreamingPreviewImages(new Map());
+        setLatestOutputIsTransparent(snapshot.background === 'transparent' && snapshot.output_format === 'png');
         setHistory((prevHistory) => [newHistoryEntry, ...prevHistory]);
+
+        if (meta.mock) {
+            setWarning(
+                `当前结果来自 MOCK 测试数据，未调用真实 OpenAI API，也不代表真实费用、模型权限或生成质量。${
+                    warnings.length > 0 ? ` ${warnings.join(' ')}` : ''
+                }`
+            );
+        } else if (warnings.length > 0) {
+            setWarning(warnings.join(' '));
+        }
     };
 
-    const handleApiCall = async (formData: GenerationFormData | EditingFormData) => {
+    const resolveRequestSize = (preset: GenerationFormData['size'], width: number, height: number): string => {
+        return preset === 'custom' ? `${width}x${height}` : (getPresetDimensions(preset) ?? 'auto');
+    };
+
+    const buildRequestSnapshot = (formData: GenerationFormData | EditingFormData): RequestSnapshot => {
+        if (mode === 'generate') {
+            const genData = formData as GenerationFormData;
+            return {
+                mode,
+                prompt: genData.prompt,
+                model: genData.model,
+                size: resolveRequestSize(genData.size, genData.customWidth, genData.customHeight),
+                quality: genData.quality,
+                n: 1,
+                background: genData.background,
+                output_format: genData.output_format,
+                output_compression: genData.output_compression,
+                moderation: genData.moderation,
+                referenceImages: [],
+                mask: null
+            };
+        }
+
+        const editData = formData as EditingFormData;
+        return {
+            mode,
+            prompt: editData.prompt,
+            model: editData.model,
+            size: resolveRequestSize(editData.size, editData.customWidth, editData.customHeight),
+            quality: editData.quality,
+            n: 1,
+            background: editData.background,
+            output_format: editData.output_format,
+            output_compression: editData.output_compression,
+            moderation: editData.moderation,
+            referenceImages: editData.imageFiles.map((file) => ({ name: file.name, file })),
+            mask: editData.maskFile ? { name: editData.maskFile.name, file: editData.maskFile } : null
+        };
+    };
+
+    const handleRequestSubmit = (formData: GenerationFormData | EditingFormData) => {
+        if (inFlightRef.current) return;
+        setError(null);
+        setWarning(null);
+        setPendingRequest(buildRequestSnapshot(formData));
+    };
+
+    const handleCancelRequest = () => {
+        if (!inFlightRef.current) {
+            setPendingRequest(null);
+        }
+    };
+
+    const handleConfirmRequest = () => {
+        const snapshot = pendingRequest;
+        if (!snapshot || inFlightRef.current) return;
+        setPendingRequest(null);
+        void executeRequest(snapshot);
+    };
+
+    const executeRequest = async (snapshot: RequestSnapshot) => {
+        if (inFlightRef.current) return;
+        inFlightRef.current = true;
+
         const startTime = Date.now();
         let durationMs = 0;
 
         setIsLoading(true);
         setGenerationStartTime(startTime);
         setError(null);
+        setWarning(null);
         setLatestImageBatch(null);
+        setLatestOutputIsTransparent(false);
         setImageOutputView('grid');
-        setStreamingPreviewImages(new Map());
-
-        const apiFormData = new FormData();
-        if (isPasswordRequiredByBackend && clientPasswordHash) {
-            apiFormData.append('passwordHash', clientPasswordHash);
-        } else if (isPasswordRequiredByBackend && !clientPasswordHash) {
-            setError('Password is required. Please configure the password by clicking the lock icon.');
-            setPasswordDialogContext('initial');
-            setIsPasswordDialogOpen(true);
-            setIsLoading(false);
-            return;
-        }
-        apiFormData.append('mode', mode);
-
-        // Add streaming parameters if enabled
-        if (enableStreaming) {
-            apiFormData.append('stream', 'true');
-            apiFormData.append('partial_images', partialImages.toString());
-        }
-
-        if (mode === 'generate') {
-            const genData = formData as GenerationFormData;
-            apiFormData.append('model', genModel);
-            apiFormData.append('prompt', genPrompt);
-            apiFormData.append('n', genN[0].toString());
-            const genSizeToSend =
-                genSize === 'custom'
-                    ? `${genCustomWidth}x${genCustomHeight}`
-                    : (getPresetDimensions(genSize) ?? genSize);
-            apiFormData.append('size', genSizeToSend);
-            apiFormData.append('quality', genQuality);
-            apiFormData.append('output_format', genOutputFormat);
-            if (
-                (genOutputFormat === 'jpeg' || genOutputFormat === 'webp') &&
-                genData.output_compression !== undefined
-            ) {
-                apiFormData.append('output_compression', genData.output_compression.toString());
-            }
-            apiFormData.append('background', genBackground);
-            apiFormData.append('moderation', genModeration);
-        } else {
-            const editData = formData as EditingFormData;
-            apiFormData.append('model', editModel);
-            apiFormData.append('prompt', editPrompt);
-            apiFormData.append('n', editN[0].toString());
-            const editSizeToSend =
-                editSize === 'custom'
-                    ? `${editCustomWidth}x${editCustomHeight}`
-                    : (getPresetDimensions(editSize) ?? editSize);
-            apiFormData.append('size', editSizeToSend);
-            apiFormData.append('quality', editQuality);
-            apiFormData.append('output_format', editOutputFormat);
-            if (
-                (editOutputFormat === 'jpeg' || editOutputFormat === 'webp') &&
-                editData.output_compression !== undefined
-            ) {
-                apiFormData.append('output_compression', editData.output_compression.toString());
-            }
-            apiFormData.append('background', editBackground);
-            apiFormData.append('moderation', editModeration);
-
-            editImageFiles.forEach((file, index) => {
-                apiFormData.append(`image_${index}`, file, file.name);
-            });
-            if (editGeneratedMaskFile) {
-                apiFormData.append('mask', editGeneratedMaskFile, editGeneratedMaskFile.name);
-            }
-        }
 
         try {
+            if (isPasswordRequiredByBackend && !clientPasswordHash) {
+                setError('Password is required. Please configure the password by clicking the lock icon.');
+                setPasswordDialogContext('initial');
+                setIsPasswordDialogOpen(true);
+                return;
+            }
+
+            const apiFormData = new FormData();
+            if (isPasswordRequiredByBackend && clientPasswordHash) {
+                apiFormData.append('passwordHash', clientPasswordHash);
+            }
+            apiFormData.append('mode', snapshot.mode);
+            apiFormData.append('model', snapshot.model);
+            apiFormData.append('prompt', snapshot.prompt);
+            apiFormData.append('n', '1');
+            apiFormData.append('size', snapshot.size);
+            apiFormData.append('quality', snapshot.quality);
+            apiFormData.append('output_format', snapshot.output_format);
+            if (snapshot.output_compression !== undefined) {
+                apiFormData.append('output_compression', snapshot.output_compression.toString());
+            }
+            apiFormData.append('background', snapshot.background);
+            apiFormData.append('moderation', snapshot.moderation);
+
+            if (snapshot.mode === 'edit') {
+                snapshot.referenceImages.forEach((reference, index) => {
+                    apiFormData.append(`image_${index}`, reference.file, reference.name);
+                });
+                if (snapshot.mask) {
+                    apiFormData.append('mask', snapshot.mask.file, snapshot.mask.name);
+                }
+            }
+
             const response = await fetch('/api/images', {
                 method: 'POST',
                 body: apiFormData
             });
 
-            // Check if response is SSE (streaming)
-            const contentType = response.headers.get('content-type');
-            if (contentType?.includes('text/event-stream')) {
-                if (!response.body) {
-                    throw new Error('Response body is null');
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-
-                    // Process complete SSE events
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop() || ''; // Keep incomplete event in buffer
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const jsonStr = line.slice(6);
-                            try {
-                                const event = JSON.parse(jsonStr);
-
-                                if (event.type === 'partial_image') {
-                                    // Update streaming preview with partial image
-                                    const imageIndex = event.index ?? 0;
-                                    const mimeType = getMimeTypeFromFormat(
-                                        mode === 'generate' ? genOutputFormat : editOutputFormat
-                                    );
-                                    const dataUrl = `data:${mimeType};base64,${event.b64_json}`;
-                                    setStreamingPreviewImages((prev) => {
-                                        const newMap = new Map(prev);
-                                        newMap.set(imageIndex, dataUrl);
-                                        return newMap;
-                                    });
-                                } else if (event.type === 'error') {
-                                    throw new Error(event.error || 'Streaming error occurred');
-                                } else if (event.type === 'done') {
-                                    // Finalize with all completed images
-                                    durationMs = Date.now() - startTime;
-
-                                    if (event.images && event.images.length > 0) {
-                                        await processApiImages(event.images, event.usage, durationMs);
-                                    }
-                                }
-                            } catch (parseError) {
-                                console.error('Error parsing SSE event:', parseError);
-                            }
-                        }
-                    }
-                }
-
-                return; // Exit early for streaming
+            const responseText = await response.text();
+            let result: ImageApiResponse;
+            try {
+                result = JSON.parse(responseText) as ImageApiResponse;
+            } catch {
+                throw new Error(`服务端返回了非 JSON 响应（HTTP ${response.status}）。`);
             }
-
-            // Non-streaming response handling (original code)
-            const result = await response.json();
 
             if (!response.ok) {
                 if (response.status === 401 && isPasswordRequiredByBackend) {
                     setError('Unauthorized: Invalid or missing password. Please try again.');
                     setPasswordDialogContext('retry');
-                    setLastApiCallArgs([formData]);
                     setIsPasswordDialogOpen(true);
-
                     return;
                 }
                 throw new Error(result.error || `API request failed with status ${response.status}`);
             }
 
-            if (result.images && result.images.length > 0) {
-                durationMs = Date.now() - startTime;
-                await processApiImages(result.images, result.usage, durationMs);
-            } else {
+            if (!result.images || result.images.length === 0) {
                 setLatestImageBatch(null);
                 throw new Error('API response did not contain valid image data or filenames.');
             }
+
+            durationMs = Date.now() - startTime;
+            await processApiImages(result.images, result.usage, durationMs, snapshot, {
+                requestId: result.request_id,
+                openaiRequestId: result.openai_request_id,
+                metadataFile: result.metadata_file,
+                metadataError: result.metadata_error,
+                mock: result.mock,
+                warnings: Array.isArray(result.warnings) ? result.warnings : []
+            });
         } catch (err: unknown) {
             durationMs = Date.now() - startTime;
             console.error(`API Call Error after ${durationMs}ms:`, err);
             const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred.';
             setError(errorMessage);
             setLatestImageBatch(null);
-            setStreamingPreviewImages(new Map());
         } finally {
             if (durationMs === 0) durationMs = Date.now() - startTime;
+            inFlightRef.current = false;
             setIsLoading(false);
             setGenerationStartTime(null);
         }
@@ -631,6 +675,9 @@ export default function HomePage() {
 
                 setLatestImageBatch(validImages.length > 0 ? validImages : null);
                 setImageOutputView(validImages.length > 1 ? 'grid' : 0);
+                setLatestOutputIsTransparent(
+                    item.background === 'transparent' && (item.output_format ?? 'png') === 'png'
+                );
             });
         },
         [getImageSrc]
@@ -811,12 +858,48 @@ export default function HomePage() {
                         : 'Set a password to use for API requests.'
                 }
             />
+            <RequestConfirmationDialog
+                request={pendingRequest}
+                isSubmitting={isLoading}
+                onCancel={handleCancelRequest}
+                onConfirm={handleConfirmRequest}
+            />
             <div className='w-full max-w-screen-2xl space-y-6'>
+                {imageApiStatus && !imageApiStatus.enabled && (
+                    <Alert
+                        data-testid='api-status-banner'
+                        className='border-yellow-500/50 bg-yellow-900/20 text-yellow-200'>
+                        <AlertTitle className='text-yellow-100'>生成服务未启用（ENABLE_IMAGE_API=false）</AlertTitle>
+                        <AlertDescription className='text-yellow-200/80'>
+                            页面仍可调整参数和检查本地配置，但提交会被服务端在接触 OpenAI SDK 之前拒绝。请在
+                            .env.local 中设置 ENABLE_IMAGE_API=true 并重启服务。
+                        </AlertDescription>
+                    </Alert>
+                )}
+                {imageApiStatus?.enabled && !imageApiStatus.apiKeyConfigured && !imageApiStatus.mock && (
+                    <Alert data-testid='api-status-banner' className='border-red-500/50 bg-red-900/20 text-red-200'>
+                        <AlertTitle className='text-red-100'>未配置 OPENAI_API_KEY</AlertTitle>
+                        <AlertDescription className='text-red-200/80'>
+                            服务端开关已启用，但仍缺少 Key。请在 .env.local 中填写 OPENAI_API_KEY 后重启；浏览器不会接触该
+                            Key。
+                        </AlertDescription>
+                    </Alert>
+                )}
+                {imageApiStatus?.mock && (
+                    <Alert
+                        data-testid='mock-status-banner'
+                        className='border-purple-500/50 bg-purple-900/20 text-purple-200'>
+                        <AlertTitle className='text-purple-100'>MOCK 测试模式</AlertTitle>
+                        <AlertDescription className='text-purple-200/80'>
+                            当前结果来自固定 fixture，不会调用真实 OpenAI，也不代表真实费用、模型权限或生成质量。
+                        </AlertDescription>
+                    </Alert>
+                )}
                 <div className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
                     <div className='relative flex h-[70vh] min-h-[600px] flex-col lg:col-span-1'>
                         <div className={mode === 'generate' ? 'block h-full w-full' : 'hidden'}>
                             <GenerationForm
-                                onSubmit={handleApiCall}
+                                onSubmit={handleRequestSubmit}
                                 isLoading={isLoading}
                                 currentMode={mode}
                                 onModeChange={setMode}
@@ -827,8 +910,6 @@ export default function HomePage() {
                                 setModel={setGenModel}
                                 prompt={genPrompt}
                                 setPrompt={setGenPrompt}
-                                n={genN}
-                                setN={setGenN}
                                 size={genSize}
                                 setSize={setGenSize}
                                 customWidth={genCustomWidth}
@@ -845,15 +926,11 @@ export default function HomePage() {
                                 setBackground={setGenBackground}
                                 moderation={genModeration}
                                 setModeration={setGenModeration}
-                                enableStreaming={enableStreaming}
-                                setEnableStreaming={setEnableStreaming}
-                                partialImages={partialImages}
-                                setPartialImages={setPartialImages}
                             />
                         </div>
                         <div className={mode === 'edit' ? 'block h-full w-full' : 'hidden'}>
                             <EditingForm
-                                onSubmit={handleApiCall}
+                                onSubmit={handleRequestSubmit}
                                 isLoading={isLoading || isSendingToEdit}
                                 currentMode={mode}
                                 onModeChange={setMode}
@@ -869,8 +946,6 @@ export default function HomePage() {
                                 maxImages={MAX_EDIT_IMAGES}
                                 editPrompt={editPrompt}
                                 setEditPrompt={setEditPrompt}
-                                editN={editN}
-                                setEditN={setEditN}
                                 editSize={editSize}
                                 setEditSize={setEditSize}
                                 editCustomWidth={editCustomWidth}
@@ -901,10 +976,6 @@ export default function HomePage() {
                                 setEditDrawnPoints={setEditDrawnPoints}
                                 editMaskPreviewUrl={editMaskPreviewUrl}
                                 setEditMaskPreviewUrl={setEditMaskPreviewUrl}
-                                enableStreaming={enableStreaming}
-                                setEnableStreaming={setEnableStreaming}
-                                partialImages={partialImages}
-                                setPartialImages={setPartialImages}
                             />
                         </div>
                     </div>
@@ -913,6 +984,12 @@ export default function HomePage() {
                             <Alert variant='destructive' className='mb-4 border-red-500/50 bg-red-900/20 text-red-300'>
                                 <AlertTitle className='text-red-200'>Error</AlertTitle>
                                 <AlertDescription>{error}</AlertDescription>
+                            </Alert>
+                        )}
+                        {warning && (
+                            <Alert className='mb-4 border-yellow-500/50 bg-yellow-900/20 text-yellow-200'>
+                                <AlertTitle className='text-yellow-100'>注意</AlertTitle>
+                                <AlertDescription>{warning}</AlertDescription>
                             </Alert>
                         )}
                         <ImageOutput
@@ -925,7 +1002,7 @@ export default function HomePage() {
                             onSendToEdit={handleSendToEdit}
                             currentMode={mode}
                             baseImagePreviewUrl={editSourceImagePreviewUrls[0] || null}
-                            streamingPreviewImages={streamingPreviewImages}
+                            transparentPreview={latestOutputIsTransparent}
                         />
                     </div>
                 </div>

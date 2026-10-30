@@ -4,14 +4,11 @@ import { ImageOptions } from '@/components/image-options';
 import { ModeToggle } from '@/components/mode-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
     GPT_IMAGE_MODELS,
     type GptImageModel,
@@ -21,7 +18,7 @@ import {
     type ImageQuality
 } from '@/lib/models';
 import { validateCustomSize, type SizePreset } from '@/lib/size-utils';
-import { Upload, Eraser, Save, Loader2, X, ScanEye, UploadCloud, Lock, LockOpen, HelpCircle } from 'lucide-react';
+import { Upload, Eraser, Save, Loader2, X, ScanEye, UploadCloud, Lock, LockOpen } from 'lucide-react';
 import Image from 'next/image';
 import * as React from 'react';
 
@@ -64,8 +61,6 @@ type EditingFormProps = {
     maxImages: number;
     editPrompt: string;
     setEditPrompt: React.Dispatch<React.SetStateAction<string>>;
-    editN: number[];
-    setEditN: React.Dispatch<React.SetStateAction<number[]>>;
     editSize: EditingFormData['size'];
     setEditSize: React.Dispatch<React.SetStateAction<EditingFormData['size']>>;
     editCustomWidth: number;
@@ -96,10 +91,6 @@ type EditingFormProps = {
     setEditDrawnPoints: React.Dispatch<React.SetStateAction<DrawnPoint[]>>;
     editMaskPreviewUrl: string | null;
     setEditMaskPreviewUrl: React.Dispatch<React.SetStateAction<string | null>>;
-    enableStreaming: boolean;
-    setEnableStreaming: React.Dispatch<React.SetStateAction<boolean>>;
-    partialImages: 1 | 2 | 3;
-    setPartialImages: React.Dispatch<React.SetStateAction<1 | 2 | 3>>;
 };
 
 export function EditingForm({
@@ -119,8 +110,6 @@ export function EditingForm({
     maxImages,
     editPrompt,
     setEditPrompt,
-    editN,
-    setEditN,
     editSize,
     setEditSize,
     editCustomWidth,
@@ -150,11 +139,7 @@ export function EditingForm({
     editDrawnPoints,
     setEditDrawnPoints,
     editMaskPreviewUrl,
-    setEditMaskPreviewUrl,
-    enableStreaming,
-    setEnableStreaming,
-    partialImages,
-    setPartialImages
+    setEditMaskPreviewUrl
 }: EditingFormProps) {
     const [firstImagePreviewUrl, setFirstImagePreviewUrl] = React.useState<string | null>(null);
 
@@ -162,13 +147,6 @@ export function EditingForm({
     const customSizeValidation =
         editSize === 'custom' ? validateCustomSize(editCustomWidth, editCustomHeight) : { valid: true as const };
     const customSizeInvalid = !customSizeValidation.valid;
-
-    // Disable streaming when editN > 1 (OpenAI limitation)
-    React.useEffect(() => {
-        if (editN[0] > 1 && enableStreaming) {
-            setEnableStreaming(false);
-        }
-    }, [editN, enableStreaming, setEnableStreaming]);
 
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
     const visualFeedbackCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -476,7 +454,7 @@ export function EditingForm({
 
         const formData: EditingFormData = {
             prompt: editPrompt,
-            n: editN[0],
+            n: 1,
             size: editSize,
             customWidth: editCustomWidth,
             customHeight: editCustomHeight,
@@ -529,101 +507,25 @@ export function EditingForm({
                         <Label htmlFor='edit-model-select' className='text-white'>
                             Model
                         </Label>
-                        <div className='flex items-center gap-4'>
-                            <Select
-                                value={editModel}
-                                onValueChange={(value) => setEditModel(value as GptImageModel)}
-                                disabled={isLoading}>
-                                <SelectTrigger
-                                    id='edit-model-select'
-                                    className='w-[220px] rounded-md border border-white/20 bg-black text-white focus:border-white/50 focus:ring-white/50'>
-                                    <SelectValue placeholder='Select model' />
-                                </SelectTrigger>
-                                <SelectContent className='border-white/20 bg-black text-white'>
-                                    {GPT_IMAGE_MODELS.map((id) => (
-                                        <SelectItem key={id} value={id} className='focus:bg-white/10'>
-                                            {id}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <div className='flex items-center gap-2'>
-                                        <Checkbox
-                                            id='edit-enable-streaming'
-                                            checked={enableStreaming}
-                                            onCheckedChange={(checked) => setEnableStreaming(!!checked)}
-                                            disabled={isLoading || editN[0] > 1}
-                                            className='border-white/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-white data-[state=checked]:bg-white data-[state=checked]:text-black'
-                                        />
-                                        <Label
-                                            htmlFor='edit-enable-streaming'
-                                            className={`text-sm ${editN[0] > 1 ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
-                                            Enable Streaming
-                                        </Label>
-                                    </div>
-                                </TooltipTrigger>
-                                <TooltipContent className='max-w-[250px]'>
-                                    {editN[0] > 1
-                                        ? 'Streaming is only supported when generating a single image (n=1).'
-                                        : 'Shows partial preview images as they are generated, providing a more interactive experience.'}
-                                </TooltipContent>
-                            </Tooltip>
-                        </div>
+                        <Select
+                            value={editModel}
+                            onValueChange={(value) => setEditModel(value as GptImageModel)}
+                            disabled={isLoading}>
+                            <SelectTrigger
+                                id='edit-model-select'
+                                className='w-[220px] rounded-md border border-white/20 bg-black text-white focus:border-white/50 focus:ring-white/50'>
+                                <SelectValue placeholder='Select model' />
+                            </SelectTrigger>
+                            <SelectContent className='border-white/20 bg-black text-white'>
+                                {GPT_IMAGE_MODELS.map((id) => (
+                                    <SelectItem key={id} value={id} className='focus:bg-white/10'>
+                                        {id}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <p className='text-xs text-white/50'>流式预览本轮关闭；点击编辑后先确认参数，不会直接请求 API。</p>
                     </div>
-
-                    {enableStreaming && (
-                        <div className='space-y-3'>
-                            <div className='flex items-center gap-2'>
-                                <Label className='text-white'>Preview Images</Label>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <HelpCircle className='h-4 w-4 cursor-help text-white/40 hover:text-white/60' />
-                                    </TooltipTrigger>
-                                    <TooltipContent className='max-w-[250px]'>
-                                        Each preview image adds ~$0.003 to the cost (100 additional output tokens).
-                                    </TooltipContent>
-                                </Tooltip>
-                            </div>
-                            <RadioGroup
-                                value={String(partialImages)}
-                                onValueChange={(value) => setPartialImages(Number(value) as 1 | 2 | 3)}
-                                disabled={isLoading}
-                                className='flex gap-x-5'>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='1'
-                                        id='edit-partial-1'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='edit-partial-1' className='cursor-pointer text-white/80'>
-                                        1
-                                    </Label>
-                                </div>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='2'
-                                        id='edit-partial-2'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='edit-partial-2' className='cursor-pointer text-white/80'>
-                                        2
-                                    </Label>
-                                </div>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='3'
-                                        id='edit-partial-3'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='edit-partial-3' className='cursor-pointer text-white/80'>
-                                        3
-                                    </Label>
-                                </div>
-                            </RadioGroup>
-                        </div>
-                    )}
 
                     <div className='space-y-1.5'>
                         <Label htmlFor='edit-prompt' className='text-white'>
@@ -829,21 +731,7 @@ export function EditingForm({
                         )}
                     </div>
 
-                    <div className='space-y-2'>
-                        <Label htmlFor='edit-n-slider' className='text-white'>
-                            Number of Images: {editN[0]}
-                        </Label>
-                        <Slider
-                            id='edit-n-slider'
-                            min={1}
-                            max={10}
-                            step={1}
-                            value={editN}
-                            onValueChange={setEditN}
-                            disabled={isLoading}
-                            className='mt-3 [&>button]:border-black [&>button]:bg-white [&>button]:ring-offset-black [&>span:first-child]:h-1 [&>span:first-child>span]:bg-white'
-                        />
-                    </div>
+                    <p className='text-sm text-white/60'>张数：1（本轮固定单张）</p>
 
                     <ImageOptions
                         idPrefix='edit'
@@ -871,10 +759,11 @@ export function EditingForm({
                 <CardFooter className='border-t border-white/10 p-4'>
                     <Button
                         type='submit'
+                        data-testid='edit-submit'
                         disabled={isLoading || !editPrompt || imageFiles.length === 0 || customSizeInvalid}
                         className='flex w-full items-center justify-center gap-2 rounded-md bg-white text-black hover:bg-white/90 disabled:bg-white/10 disabled:text-white/40'>
                         {isLoading && <Loader2 className='h-4 w-4 animate-spin' />}
-                        {isLoading ? 'Editing...' : 'Edit Image'}
+                        {isLoading ? '提交中...' : '编辑图片（先确认）'}
                     </Button>
                 </CardFooter>
             </form>

@@ -2,6 +2,8 @@
 
 A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, and `gpt-image-2`) for generating and editing images.
 
+> **Local materials fork:** This repository is derived from [alasano/gpt-image-playground](https://github.com/alasano/gpt-image-playground) under the MIT license. It adds a server-side API gate, preflight confirmation, 16:9 size presets, transparent PNG handling, original-byte plus JSON metadata archival, and proxy-aware timeout diagnostics. See [docs/LOCAL_SETUP.zh-CN.md](docs/LOCAL_SETUP.zh-CN.md) for the local workflow.
+
 > **Note:** The playground defaults to `gpt-image-2.5-flare`, OpenAI's fast default model. All three models support arbitrary resolutions up to 4K (with constraint validation) and transparent backgrounds (preview on `gpt-image-2`). The `gpt-image-2.5` models add the `xhigh` and `max` quality tiers. Retired models (`gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`) can no longer be selected, but images generated with them remain visible in the history with their original cost breakdown.
 
 <p align="center">
@@ -77,9 +79,15 @@ You need an OpenAI API key to use this application.
 
     ```dotenv
     OPENAI_API_KEY=your_openai_api_key_here
+    ENABLE_IMAGE_API=false
+    NEXT_PUBLIC_IMAGE_STORAGE_MODE=fs
     ```
 
+    `ENABLE_IMAGE_API` defaults to `false`: the page stays usable, but generation and edit requests are rejected on the server before any SDK or network call. Set it to `true` only when you intend to make real API requests.
+
     **Important:** Keep your API key secret. The `.env.local` file is included in `.gitignore` by default to prevent accidental commits.
+
+For the local material workflow used in this repository (Chinese setup guide, confirmation flow, size presets, original-byte archival and metadata), see [docs/LOCAL_SETUP.zh-CN.md](docs/LOCAL_SETUP.zh-CN.md).
 
 ---
 
@@ -104,14 +112,9 @@ If this variable is **not set** or has any other value, the application defaults
 
 #### 🟡 (Optional) Use a Custom API Endpoint
 
-If you need to use an OpenAI-compatible API endpoint (e.g., a local model server or a different provider), you can specify its base URL using the `OPENAI_API_BASE_URL` environment variable in your `.env.local` file:
+> **Local material branch:** custom endpoints are intentionally disabled. The server always uses the official OpenAI endpoint and ignores `OPENAI_API_BASE_URL`, so the local workflow cannot silently route through a relay. See [docs/LOCAL_SETUP.zh-CN.md](docs/LOCAL_SETUP.zh-CN.md).
 
-```dotenv
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_API_BASE_URL=your_compatible_api_endpoint_here
-```
-
-If `OPENAI_API_BASE_URL` is not set, the application will default to the standard OpenAI API endpoint.
+The upstream project supports an OpenAI-compatible API endpoint through the `OPENAI_API_BASE_URL` environment variable. That behavior is not active in this branch.
 
 ---
 
@@ -143,21 +146,15 @@ npm install
 
 ### 3. Run the Development Server 🟢
 
-Start the Next.js development server:
+On Windows, double-click `start-local.cmd` (or run `node scripts/start-local.mjs`). It binds to `127.0.0.1`, prefers port `3000`, and prints the actual URL if `3000` is occupied.
 
 ```bash
-npm run dev
-# or
-# yarn dev
-# or
-# pnpm dev
-# or
-# bun dev
+npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
 ### 4. Open the Playground 🟢
 
-Open [http://localhost:3000](http://localhost:3000) in your web browser. You should now be able to use the GPT Image Playground!
+Open the URL printed by the launcher (normally [http://127.0.0.1:3000](http://127.0.0.1:3000)) in your web browser.
 
 ## 🤝 Contributing
 

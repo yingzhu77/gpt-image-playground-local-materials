@@ -4,13 +4,9 @@ import { ImageOptions } from '@/components/image-options';
 import { ModeToggle } from '@/components/mode-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
     GPT_IMAGE_MODELS,
     type GptImageModel,
@@ -20,7 +16,7 @@ import {
     type ImageQuality
 } from '@/lib/models';
 import { validateCustomSize, type SizePreset } from '@/lib/size-utils';
-import { HelpCircle, Loader2, Lock, LockOpen } from 'lucide-react';
+import { Loader2, Lock, LockOpen } from 'lucide-react';
 import * as React from 'react';
 
 export type GenerationFormData = {
@@ -49,8 +45,6 @@ type GenerationFormProps = {
     setModel: React.Dispatch<React.SetStateAction<GenerationFormData['model']>>;
     prompt: string;
     setPrompt: React.Dispatch<React.SetStateAction<string>>;
-    n: number[];
-    setN: React.Dispatch<React.SetStateAction<number[]>>;
     size: GenerationFormData['size'];
     setSize: React.Dispatch<React.SetStateAction<GenerationFormData['size']>>;
     customWidth: number;
@@ -67,10 +61,6 @@ type GenerationFormProps = {
     setBackground: React.Dispatch<React.SetStateAction<GenerationFormData['background']>>;
     moderation: GenerationFormData['moderation'];
     setModeration: React.Dispatch<React.SetStateAction<GenerationFormData['moderation']>>;
-    enableStreaming: boolean;
-    setEnableStreaming: React.Dispatch<React.SetStateAction<boolean>>;
-    partialImages: 1 | 2 | 3;
-    setPartialImages: React.Dispatch<React.SetStateAction<1 | 2 | 3>>;
 };
 
 export function GenerationForm({
@@ -85,8 +75,6 @@ export function GenerationForm({
     setModel,
     prompt,
     setPrompt,
-    n,
-    setN,
     size,
     setSize,
     customWidth,
@@ -102,23 +90,12 @@ export function GenerationForm({
     background,
     setBackground,
     moderation,
-    setModeration,
-    enableStreaming,
-    setEnableStreaming,
-    partialImages,
-    setPartialImages
+    setModeration
 }: GenerationFormProps) {
     const showCompression = outputFormat === 'jpeg' || outputFormat === 'webp';
     const customSizeValidation =
         size === 'custom' ? validateCustomSize(customWidth, customHeight) : { valid: true as const };
     const customSizeInvalid = !customSizeValidation.valid;
-
-    // Disable streaming when n > 1 (OpenAI limitation)
-    React.useEffect(() => {
-        if (n[0] > 1 && enableStreaming) {
-            setEnableStreaming(false);
-        }
-    }, [n, enableStreaming, setEnableStreaming]);
 
     const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -127,7 +104,7 @@ export function GenerationForm({
         }
         const formData: GenerationFormData = {
             prompt,
-            n: n[0],
+            n: 1,
             size,
             customWidth,
             customHeight,
@@ -172,101 +149,25 @@ export function GenerationForm({
                         <Label htmlFor='model-select' className='text-white'>
                             Model
                         </Label>
-                        <div className='flex items-center gap-4'>
-                            <Select
-                                value={model}
-                                onValueChange={(value) => setModel(value as GptImageModel)}
-                                disabled={isLoading}>
-                                <SelectTrigger
-                                    id='model-select'
-                                    className='w-[220px] rounded-md border border-white/20 bg-black text-white focus:border-white/50 focus:ring-white/50'>
-                                    <SelectValue placeholder='Select model' />
-                                </SelectTrigger>
-                                <SelectContent className='border-white/20 bg-black text-white'>
-                                    {GPT_IMAGE_MODELS.map((id) => (
-                                        <SelectItem key={id} value={id} className='focus:bg-white/10'>
-                                            {id}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <div className='flex items-center gap-2'>
-                                        <Checkbox
-                                            id='enable-streaming'
-                                            checked={enableStreaming}
-                                            onCheckedChange={(checked) => setEnableStreaming(!!checked)}
-                                            disabled={isLoading || n[0] > 1}
-                                            className='border-white/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-white data-[state=checked]:bg-white data-[state=checked]:text-black'
-                                        />
-                                        <Label
-                                            htmlFor='enable-streaming'
-                                            className={`text-sm ${n[0] > 1 ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
-                                            Enable Streaming
-                                        </Label>
-                                    </div>
-                                </TooltipTrigger>
-                                <TooltipContent className='max-w-[250px]'>
-                                    {n[0] > 1
-                                        ? 'Streaming is only supported when generating a single image (n=1).'
-                                        : 'Shows partial preview images as they are generated, providing a more interactive experience.'}
-                                </TooltipContent>
-                            </Tooltip>
-                        </div>
+                        <Select
+                            value={model}
+                            onValueChange={(value) => setModel(value as GptImageModel)}
+                            disabled={isLoading}>
+                            <SelectTrigger
+                                id='model-select'
+                                className='w-[220px] rounded-md border border-white/20 bg-black text-white focus:border-white/50 focus:ring-white/50'>
+                                <SelectValue placeholder='Select model' />
+                            </SelectTrigger>
+                            <SelectContent className='border-white/20 bg-black text-white'>
+                                {GPT_IMAGE_MODELS.map((id) => (
+                                    <SelectItem key={id} value={id} className='focus:bg-white/10'>
+                                        {id}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <p className='text-xs text-white/50'>流式预览本轮关闭；点击生成后先确认参数，不会直接请求 API。</p>
                     </div>
-
-                    {enableStreaming && (
-                        <div className='space-y-3'>
-                            <div className='flex items-center gap-2'>
-                                <Label className='text-white'>Preview Images</Label>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <HelpCircle className='h-4 w-4 cursor-help text-white/40 hover:text-white/60' />
-                                    </TooltipTrigger>
-                                    <TooltipContent className='max-w-[250px]'>
-                                        Each preview image adds ~$0.003 to the cost (100 additional output tokens).
-                                    </TooltipContent>
-                                </Tooltip>
-                            </div>
-                            <RadioGroup
-                                value={String(partialImages)}
-                                onValueChange={(value) => setPartialImages(Number(value) as 1 | 2 | 3)}
-                                disabled={isLoading}
-                                className='flex gap-x-5'>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='1'
-                                        id='partial-1'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='partial-1' className='cursor-pointer text-white/80'>
-                                        1
-                                    </Label>
-                                </div>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='2'
-                                        id='partial-2'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='partial-2' className='cursor-pointer text-white/80'>
-                                        2
-                                    </Label>
-                                </div>
-                                <div className='flex items-center space-x-2'>
-                                    <RadioGroupItem
-                                        value='3'
-                                        id='partial-3'
-                                        className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
-                                    />
-                                    <Label htmlFor='partial-3' className='cursor-pointer text-white/80'>
-                                        3
-                                    </Label>
-                                </div>
-                            </RadioGroup>
-                        </div>
-                    )}
 
                     <div className='space-y-1.5'>
                         <Label htmlFor='prompt' className='text-white'>
@@ -283,21 +184,7 @@ export function GenerationForm({
                         />
                     </div>
 
-                    <div className='space-y-2'>
-                        <Label htmlFor='n-slider' className='text-white'>
-                            Number of Images: {n[0]}
-                        </Label>
-                        <Slider
-                            id='n-slider'
-                            min={1}
-                            max={10}
-                            step={1}
-                            value={n}
-                            onValueChange={setN}
-                            disabled={isLoading}
-                            className='mt-3 [&>button]:border-black [&>button]:bg-white [&>button]:ring-offset-black [&>span:first-child]:h-1 [&>span:first-child>span]:bg-white'
-                        />
-                    </div>
+                    <p className='text-sm text-white/60'>张数：1（本轮固定单张）</p>
 
                     <ImageOptions
                         idPrefix='gen'
@@ -325,10 +212,11 @@ export function GenerationForm({
                 <CardFooter className='border-t border-white/10 p-4'>
                     <Button
                         type='submit'
+                        data-testid='generate-submit'
                         disabled={isLoading || !prompt || customSizeInvalid}
                         className='flex w-full items-center justify-center gap-2 rounded-md bg-white text-black hover:bg-white/90 disabled:bg-white/10 disabled:text-white/40'>
                         {isLoading && <Loader2 className='h-4 w-4 animate-spin' />}
-                        {isLoading ? 'Generating...' : 'Generate'}
+                        {isLoading ? '提交中...' : '生成图片（先确认）'}
                     </Button>
                 </CardFooter>
             </form>

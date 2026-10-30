@@ -1,9 +1,8 @@
+import { getOutputDir } from '@/lib/server/storage';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
-
-const outputDir = path.resolve(process.cwd(), 'generated-images');
 
 function sha256(data: string): string {
     return crypto.createHash('sha256').update(data).digest('hex');
@@ -68,7 +67,7 @@ export async function POST(request: NextRequest) {
             continue;
         }
 
-        const filepath = path.join(outputDir, filename);
+        const filepath = path.join(/*turbopackIgnore: true*/ getOutputDir(), filename);
 
         try {
             await fs.unlink(filepath);

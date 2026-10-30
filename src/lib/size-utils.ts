@@ -37,12 +37,14 @@ export function validateCustomSize(width: number, height: number): SizeValidatio
     return { valid: true };
 }
 
-export type SizePreset = 'auto' | 'custom' | 'square' | 'landscape' | 'portrait';
+export type SizePreset = 'auto' | 'custom' | 'square-1k' | 'widescreen-draft' | 'widescreen-2k';
+
+export const DEFAULT_SIZE_PRESET: SizePreset = 'square-1k';
 
 const PRESET_DIMENSIONS: Record<Exclude<SizePreset, 'auto' | 'custom'>, string> = {
-    square: '2048x2048',
-    landscape: '3072x2048',
-    portrait: '2048x3072'
+    'square-1k': '1024x1024',
+    'widescreen-draft': '1536x864',
+    'widescreen-2k': '2048x1152'
 };
 
 /**
@@ -62,6 +64,14 @@ export function getPresetTooltip(preset: SizePreset): string | null {
     if (!dims) return null;
     const [w, h] = dims.split('x').map(Number);
     const mp = ((w * h) / 1_000_000).toFixed(1);
-    const ratio = preset === 'square' ? '1:1' : preset === 'landscape' ? '3:2' : '2:3';
-    return `${w} × ${h} · ${ratio} · ${mp} MP`;
+    return `${w} × ${h} · ${aspectRatio(w, h)} · ${mp} MP`;
+}
+
+function aspectRatio(width: number, height: number): string {
+    const divisor = greatestCommonDivisor(width, height);
+    return `${width / divisor}:${height / divisor}`;
+}
+
+function greatestCommonDivisor(a: number, b: number): number {
+    return b === 0 ? a : greatestCommonDivisor(b, a % b);
 }

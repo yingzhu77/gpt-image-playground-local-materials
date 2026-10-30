@@ -88,20 +88,34 @@ function HistoryPanelImpl({
     const [isTotalCostDialogOpen, setIsTotalCostDialogOpen] = React.useState(false);
     const [copiedTimestamp, setCopiedTimestamp] = React.useState<number | null>(null);
 
-    const { totalCost, totalImages } = React.useMemo(() => {
+    const { totalCost, totalImages, pricedImages, mockImages } = React.useMemo(() => {
         let cost = 0;
         let images = 0;
+        let priced = 0;
+        let mocks = 0;
         history.forEach((item) => {
+            const itemImages = item.images?.length ?? 0;
+            if (item.isMock) {
+                mocks += itemImages;
+                return;
+            }
+            images += itemImages;
             if (item.costDetails) {
                 cost += item.costDetails.estimated_cost_usd;
+                priced += itemImages;
             }
-            images += item.images?.length ?? 0;
         });
 
-        return { totalCost: Math.round(cost * 10000) / 10000, totalImages: images };
+        return {
+            totalCost: Math.round(cost * 10000) / 10000,
+            totalImages: images,
+            pricedImages: priced,
+            mockImages: mocks
+        };
     }, [history]);
 
-    const averageCost = totalImages > 0 ? totalCost / totalImages : 0;
+    const averageCost = pricedImages > 0 ? totalCost / pricedImages : 0;
+    const unpricedImages = totalImages - pricedImages;
 
     const handleCopy = async (text: string | null | undefined, timestamp: number) => {
         if (!text) return;
@@ -149,12 +163,29 @@ function HistoryPanelImpl({
                                     ))}
                                 </div>
                                 <div className='space-y-2 py-4 text-sm text-neutral-300'>
+                                    <p className='rounded-md border border-neutral-700 bg-neutral-800 p-2 text-xs text-neutral-400'>
+                                        这是根据本地历史记录中的 usage 估算的费用，不是 OpenAI 账单或账户余额；缺少 usage
+                                        的记录不会按 0 计入。
+                                    </p>
                                     <div className='flex justify-between'>
                                         <span>Total Images Generated:</span> <span>{totalImages.toLocaleString()}</span>
                                     </div>
                                     <div className='flex justify-between'>
-                                        <span>Average Cost Per Image:</span> <span>${averageCost.toFixed(4)}</span>
+                                        <span>Average Cost Per Image:</span>{' '}
+                                        <span>{pricedImages > 0 ? `$${averageCost.toFixed(4)}` : '未知'}</span>
                                     </div>
+                                    {unpricedImages > 0 && (
+                                        <div className='flex justify-between text-yellow-300/90'>
+                                            <span>Images With Unknown Cost:</span>{' '}
+                                            <span>{unpricedImages.toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {mockImages > 0 && (
+                                        <div className='flex justify-between text-purple-300/90'>
+                                            <span>MOCK Images Excluded:</span>{' '}
+                                            <span>{mockImages.toLocaleString()}</span>
+                                        </div>
+                                    )}
                                     <hr className='my-2 border-neutral-700' />
                                     <div className='flex justify-between font-medium text-white'>
                                         <span>Total Estimated Cost:</span>
@@ -201,6 +232,15 @@ function HistoryPanelImpl({
                             const originalStorageMode = item.storageModeUsed || 'fs';
                             const outputFormat = item.output_format || 'png';
                             const model = item.model ?? 'gpt-image-1';
+                            const recordedSize = item.size ?? '未记录（旧记录）';
+                            const recordedCount = item.n ?? imageCount;
+                            const usageTotalTokens = item.usage
+                                ? (item.usage.total_tokens ??
+                                  (item.usage.input_tokens !== undefined ||
+                                  item.usage.output_tokens !== undefined
+                                      ? (item.usage.input_tokens ?? 0) + (item.usage.output_tokens ?? 0)
+                                      : undefined))
+                                : undefined;
 
                             let thumbnailUrl: string | undefined;
                             if (firstImage) {
@@ -360,6 +400,9 @@ function HistoryPanelImpl({
                                                                             )}
                                                                         </span>
                                                                     </div>
+                                                                    <p className='text-xs text-neutral-500'>
+                                                                        根据 usage 估算，不是 OpenAI 账单或账户余额。
+                                                                    </p>
                                                                 </div>
                                                             </>
                                                         );
@@ -389,6 +432,12 @@ function HistoryPanelImpl({
                                             <span className='font-medium text-white/80'>Model:</span> {model}
                                         </p>
                                         <p>
+                                            <span className='font-medium text-white/80'>Size:</span> {recordedSize}
+                                        </p>
+                                        <p>
+                                            <span className='font-medium text-white/80'>Count:</span> {recordedCount}
+                                        </p>
+                                        <p>
                                             <span className='font-medium text-white/80'>Quality:</span> {item.quality}
                                         </p>
                                         <p>
@@ -397,6 +446,36 @@ function HistoryPanelImpl({
                                         <p>
                                             <span className='font-medium text-white/80'>Mod:</span> {item.moderation}
                                         </p>
+                                        <p>
+                                            <span className='font-medium text-white/80'>Tokens:</span>{' '}
+                                            {usageTotalTokens !== undefined
+                                                ? usageTotalTokens.toLocaleString()
+                                                : '未知（usage 缺失）'}
+                                        </p>
+                                        <p>
+                                            <span className='font-medium text-white/80'>Cost:</span>{' '}
+                                            {item.costDetails
+                                                ? `~$${item.costDetails.estimated_cost_usd.toFixed(4)}（根据 usage 估算）`
+                                                : '未知'}
+                                        </p>
+                                        {item.isMock && <p className='text-purple-300'>MOCK 测试数据（未调用真实 API）</p>}
+                                        {item.requestId && (
+                                            <p className='truncate' title={item.requestId}>
+                                                <span className='font-medium text-white/80'>Local ID:</span>{' '}
+                                                {item.requestId}
+                                            </p>
+                                        )}
+                                        {item.metadataFile && (
+                                            <p className='truncate' title={item.metadataFile}>
+                                                <span className='font-medium text-white/80'>JSON:</span>{' '}
+                                                {item.metadataFile}
+                                            </p>
+                                        )}
+                                        {item.archiveWarning && (
+                                            <p className='text-yellow-300/90' title={item.archiveWarning}>
+                                                归档提示：{item.archiveWarning}
+                                            </p>
+                                        )}
                                         <div className='mt-2 flex items-center gap-1'>
                                             <Dialog
                                                 open={openPromptDialogTimestamp === itemKey}

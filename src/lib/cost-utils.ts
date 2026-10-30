@@ -1,11 +1,13 @@
 import type { GptImageModel, HistoryGptImageModel } from '@/lib/models';
 
 export type ApiUsage = {
+    input_tokens?: number;
     input_tokens_details?: {
         text_tokens?: number;
         image_tokens?: number;
     };
     output_tokens?: number;
+    total_tokens?: number;
 };
 
 export type CostDetails = {

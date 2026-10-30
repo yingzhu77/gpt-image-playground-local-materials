@@ -2,7 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Loader2, Send, Grid } from 'lucide-react';
+import { Loader2, Send, Grid, Download } from 'lucide-react';
 import Image from 'next/image';
 import * as React from 'react';
 
@@ -30,7 +30,7 @@ type ImageOutputProps = {
     onSendToEdit: (filename: string) => void;
     currentMode: 'generate' | 'edit';
     baseImagePreviewUrl: string | null;
-    streamingPreviewImages?: Map<number, string>;
+    transparentPreview?: boolean;
 };
 
 const getGridColsClass = (count: number): string => {
@@ -50,7 +50,7 @@ export function ImageOutput({
     onSendToEdit,
     currentMode,
     baseImagePreviewUrl,
-    streamingPreviewImages
+    transparentPreview = false
 }: ImageOutputProps) {
     const handleSendClick = () => {
         // Send to edit only works when a single image is selected
@@ -62,41 +62,19 @@ export function ImageOutput({
     const showCarousel = imageBatch && imageBatch.length > 1;
     const isSingleImageView = typeof viewMode === 'number';
     const canSendToEdit = !isLoading && isSingleImageView && imageBatch && imageBatch[viewMode];
+    const selectedImage =
+        typeof viewMode === 'number'
+            ? imageBatch?.[viewMode]
+            : imageBatch && imageBatch.length === 1
+              ? imageBatch[0]
+              : undefined;
+    const canDownload = !isLoading && !!selectedImage;
 
     return (
         <div className='flex h-full min-h-[300px] w-full flex-col items-center justify-between gap-4 overflow-hidden rounded-lg border border-white/20 bg-black p-4'>
             <div className='relative flex h-full w-full flex-grow items-center justify-center overflow-hidden'>
                 {isLoading ? (
-                    streamingPreviewImages && streamingPreviewImages.size > 0 ? (
-                        // Show streaming preview images - single image centered like final view
-                        <div className='relative flex h-full w-full items-center justify-center'>
-                            {/* Show the latest preview image (highest index) */}
-                            {(() => {
-                                const entries = Array.from(streamingPreviewImages.entries());
-                                const latestEntry = entries[entries.length - 1];
-                                if (!latestEntry) return null;
-                                const [, dataUrl] = latestEntry;
-                                return (
-                                    <Image
-                                        src={dataUrl}
-                                        alt='Streaming preview'
-                                        width={512}
-                                        height={512}
-                                        className='max-h-full max-w-full object-contain'
-                                        unoptimized
-                                    />
-                                );
-                            })()}
-                            {/* Overlay loader at bottom center */}
-                            <div className='absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-white/80'>
-                                <Loader2 className='h-4 w-4 animate-spin' />
-                                <p className='text-sm'>Streaming...</p>
-                                {loadingStartTime !== null && (
-                                    <ElapsedTimer startTime={loadingStartTime} className='text-sm text-white/50' />
-                                )}
-                            </div>
-                        </div>
-                    ) : currentMode === 'edit' && baseImagePreviewUrl ? (
+                    currentMode === 'edit' && baseImagePreviewUrl ? (
                         <div className='relative flex h-full w-full items-center justify-center'>
                             <Image
                                 src={baseImagePreviewUrl}
@@ -130,7 +108,10 @@ export function ImageOutput({
                             {imageBatch.map((img, index) => (
                                 <div
                                     key={img.filename}
-                                    className='relative aspect-square overflow-hidden rounded border border-white/10'>
+                                    className={cn(
+                                        'relative aspect-square overflow-hidden rounded border border-white/10',
+                                        transparentPreview && 'bg-checkerboard'
+                                    )}>
                                     <Image
                                         src={img.path}
                                         alt={`Generated image ${index + 1}`}
@@ -143,14 +124,20 @@ export function ImageOutput({
                             ))}
                         </div>
                     ) : imageBatch[viewMode] ? (
-                        <Image
-                            src={imageBatch[viewMode].path}
-                            alt={altText}
-                            width={512}
-                            height={512}
-                            className='max-h-full max-w-full object-contain'
-                            unoptimized
-                        />
+                        <div
+                            className={cn(
+                                'flex h-full w-full items-center justify-center',
+                                transparentPreview && 'bg-checkerboard'
+                            )}>
+                            <Image
+                                src={imageBatch[viewMode].path}
+                                alt={altText}
+                                width={512}
+                                height={512}
+                                className='max-h-full max-w-full object-contain'
+                                unoptimized
+                            />
+                        </div>
                     ) : (
                         <div className='text-center text-white/40'>
                             <p>Error displaying image.</p>
@@ -203,6 +190,32 @@ export function ImageOutput({
                             </Button>
                         ))}
                     </div>
+                )}
+
+                {canDownload && selectedImage ? (
+                    <Button
+                        asChild
+                        variant='outline'
+                        size='sm'
+                        title='保存 API 返回的原始字节，不缩放、不重新编码'
+                        className='shrink-0 border-white/20 text-white/80 hover:bg-white/10 hover:text-white'>
+                        <a
+                            href={selectedImage.path}
+                            download={selectedImage.filename}
+                            data-testid='download-original'>
+                            <Download className='mr-2 h-4 w-4' />
+                            下载原图
+                        </a>
+                    </Button>
+                ) : (
+                    <Button
+                        variant='outline'
+                        size='sm'
+                        disabled
+                        className='shrink-0 border-white/20 text-white/80 disabled:pointer-events-none disabled:opacity-50'>
+                        <Download className='mr-2 h-4 w-4' />
+                        下载原图
+                    </Button>
                 )}
 
                 <Button
