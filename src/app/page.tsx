@@ -1,5 +1,6 @@
 'use client';
 
+import { ApiKeyDialog } from '@/components/api-key-dialog';
 import { EditingForm, type EditingFormData } from '@/components/editing-form';
 import { GenerationForm, type GenerationFormData } from '@/components/generation-form';
 import { HistoryPanel } from '@/components/history-panel';
@@ -7,6 +8,7 @@ import { ImageOutput } from '@/components/image-output';
 import { PasswordDialog } from '@/components/password-dialog';
 import { RequestConfirmationDialog } from '@/components/request-confirmation-dialog';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { calculateApiCost, type ApiUsage, type CostDetails } from '@/lib/cost-utils';
 import { db, type ImageRecord } from '@/lib/db';
 import {
@@ -126,6 +128,9 @@ export default function HomePage() {
     const [error, setError] = React.useState<string | null>(null);
     const [warning, setWarning] = React.useState<string | null>(null);
     const [imageApiStatus, setImageApiStatus] = React.useState<ImageApiStatus | null>(null);
+    const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = React.useState(false);
+    const [apiKeyConfigNotice, setApiKeyConfigNotice] = React.useState<string | null>(null);
+    const hasAutoPromptedApiKeyRef = React.useRef(false);
     const [latestImageBatch, setLatestImageBatch] = React.useState<{ path: string; filename: string }[] | null>(null);
     const [imageOutputView, setImageOutputView] = React.useState<'grid' | number>('grid');
     const [latestOutputIsTransparent, setLatestOutputIsTransparent] = React.useState(false);
@@ -236,31 +241,46 @@ export default function HomePage() {
         };
     }, []);
 
-    React.useEffect(() => {
-        const fetchAuthStatus = async () => {
-            try {
-                const response = await fetch('/api/auth-status');
-                if (!response.ok) {
-                    throw new Error('Failed to fetch auth status');
-                }
-                const data = await response.json();
-                setIsPasswordRequiredByBackend(data.passwordRequired);
-                setImageApiStatus({
-                    enabled: data.imageApiEnabled === true,
-                    apiKeyConfigured: data.apiKeyConfigured === true,
-                    mock: data.imageApiMock === true
-                });
-            } catch (error) {
-                console.error('Error fetching auth status:', error);
-                setIsPasswordRequiredByBackend(false);
+    const refreshImageApiStatus = React.useCallback(async (options?: { autoPrompt?: boolean }) => {
+        try {
+            const response = await fetch('/api/auth-status', { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error('Failed to fetch auth status');
             }
-        };
+            const data = await response.json();
+            setIsPasswordRequiredByBackend(data.passwordRequired === true);
+            const status: ImageApiStatus = {
+                enabled: data.imageApiEnabled === true,
+                apiKeyConfigured: data.apiKeyConfigured === true,
+                mock: data.imageApiMock === true
+            };
+            setImageApiStatus(status);
 
-        fetchAuthStatus();
+            if (
+                options?.autoPrompt &&
+                !hasAutoPromptedApiKeyRef.current &&
+                !status.mock &&
+                !status.apiKeyConfigured &&
+                !status.enabled
+            ) {
+                hasAutoPromptedApiKeyRef.current = true;
+                setIsApiKeyDialogOpen(true);
+            }
 
+            return status;
+        } catch (error) {
+            console.error('Error fetching auth status:', error);
+            setIsPasswordRequiredByBackend(false);
+            return null;
+        }
+    }, []);
+
+    React.useEffect(() => {
         let cancelled = false;
         queueMicrotask(() => {
             if (cancelled) return;
+
+            void refreshImageApiStatus({ autoPrompt: true });
 
             const storedHash = localStorage.getItem('clientPasswordHash');
             if (storedHash) {
@@ -271,7 +291,18 @@ export default function HomePage() {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [refreshImageApiStatus]);
+
+    const handleApiKeyConfigured = React.useCallback(
+        async ({ persisted, warning }: { persisted: boolean; warning: string | null }) => {
+            setApiKeyConfigNotice(persisted ? null : warning);
+            const status = await refreshImageApiStatus();
+            if (!status) {
+                setImageApiStatus({ enabled: true, apiKeyConfigured: true, mock: false });
+            }
+        },
+        [refreshImageApiStatus]
+    );
 
     React.useEffect(() => {
         if (!isInitialLoad) {
@@ -845,6 +876,22 @@ export default function HomePage() {
         setItemToDeleteConfirm(null);
     }, []);
 
+    const isImageApiReady =
+        imageApiStatus?.enabled === true && imageApiStatus.apiKeyConfigured === true && imageApiStatus.mock !== true;
+
+    let apiKeyStatusLabel = '正在读取配置...';
+    if (imageApiStatus) {
+        if (imageApiStatus.mock) {
+            apiKeyStatusLabel = 'MOCK 测试模式';
+        } else if (isImageApiReady) {
+            apiKeyStatusLabel = 'Key 已配置 / 生成已启用';
+        } else if (imageApiStatus.apiKeyConfigured) {
+            apiKeyStatusLabel = 'Key 已配置 / 生成未启用';
+        } else {
+            apiKeyStatusLabel = 'Key 未配置';
+        }
+    }
+
     return (
         <main className='flex min-h-screen flex-col items-center bg-black p-4 text-white md:p-8 lg:p-12'>
             <PasswordDialog
@@ -858,6 +905,11 @@ export default function HomePage() {
                         : 'Set a password to use for API requests.'
                 }
             />
+            <ApiKeyDialog
+                isOpen={isApiKeyDialogOpen}
+                onOpenChange={setIsApiKeyDialogOpen}
+                onConfigured={handleApiKeyConfigured}
+            />
             <RequestConfirmationDialog
                 request={pendingRequest}
                 isSubmitting={isLoading}
@@ -865,14 +917,51 @@ export default function HomePage() {
                 onConfirm={handleConfirmRequest}
             />
             <div className='w-full max-w-screen-2xl space-y-6'>
+                <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 px-4 py-3'>
+                    <div className='flex flex-wrap items-center gap-2 text-sm'>
+                        <span className='text-neutral-400'>OpenAI API：</span>
+                        <span
+                            data-testid='api-key-config-state'
+                            className={isImageApiReady ? 'font-medium text-green-400' : 'font-medium text-neutral-300'}>
+                            {apiKeyStatusLabel}
+                        </span>
+                    </div>
+                    <Button
+                        type='button'
+                        variant='outline'
+                        data-testid='open-api-key-dialog'
+                        onClick={() => setIsApiKeyDialogOpen(true)}
+                        className='border-neutral-600 text-neutral-200 hover:bg-neutral-700 hover:text-white'>
+                        配置 API Key / 启用生成
+                    </Button>
+                </div>
+                {apiKeyConfigNotice && (
+                    <Alert
+                        data-testid='api-key-config-notice'
+                        className='border-yellow-500/50 bg-yellow-900/20 text-yellow-200'>
+                        <AlertTitle className='text-yellow-100'>API Key 已配置</AlertTitle>
+                        <AlertDescription className='text-yellow-200/80'>{apiKeyConfigNotice}</AlertDescription>
+                    </Alert>
+                )}
+                {isImageApiReady && (
+                    <Alert
+                        data-testid='api-ready-banner'
+                        className='border-green-500/50 bg-green-900/20 text-green-200'>
+                        <AlertTitle className='text-green-100'>Key 已配置 / 生成已启用</AlertTitle>
+                        <AlertDescription className='text-green-200/80'>
+                            Key 仅保存在本机服务端。提交生成前仍会显示确认框，确认后会产生真实 API 费用。
+                        </AlertDescription>
+                    </Alert>
+                )}
                 {imageApiStatus && !imageApiStatus.enabled && (
                     <Alert
                         data-testid='api-status-banner'
                         className='border-yellow-500/50 bg-yellow-900/20 text-yellow-200'>
                         <AlertTitle className='text-yellow-100'>生成服务未启用（ENABLE_IMAGE_API=false）</AlertTitle>
                         <AlertDescription className='text-yellow-200/80'>
-                            页面仍可调整参数和检查本地配置，但提交会被服务端在接触 OpenAI SDK 之前拒绝。请在
-                            .env.local 中设置 ENABLE_IMAGE_API=true 并重启服务。
+                            页面仍可调整参数和检查本地配置，但提交会被服务端在接触 OpenAI SDK 之前拒绝。可点击上方“配置
+                            API Key / 启用生成”保存 Key 并启用；也可在 .env.local 设置 ENABLE_IMAGE_API=true
+                            后重启服务。
                         </AlertDescription>
                     </Alert>
                 )}
@@ -880,8 +969,8 @@ export default function HomePage() {
                     <Alert data-testid='api-status-banner' className='border-red-500/50 bg-red-900/20 text-red-200'>
                         <AlertTitle className='text-red-100'>未配置 OPENAI_API_KEY</AlertTitle>
                         <AlertDescription className='text-red-200/80'>
-                            服务端开关已启用，但仍缺少 Key。请在 .env.local 中填写 OPENAI_API_KEY 后重启；浏览器不会接触该
-                            Key。
+                            服务端开关已启用，但仍缺少 Key。点击上方“配置 API Key / 启用生成”粘贴
+                            Key；浏览器不会保存或显示该 Key。
                         </AlertDescription>
                     </Alert>
                 )}

@@ -1,4 +1,10 @@
 import type { ImageModeration } from '@/lib/models';
+import {
+    getApiKeySource,
+    getEffectiveApiKey,
+    hasOpenAiApiKey as hasRuntimeOpenAiApiKey,
+    isImageApiEnabled as isRuntimeImageApiEnabled
+} from '@/lib/server/runtime-config';
 import fs from 'fs/promises';
 import OpenAI from 'openai';
 import path from 'path';
@@ -35,11 +41,11 @@ export class MockConfigurationError extends Error {
 }
 
 export function isImageApiEnabled(): boolean {
-    return process.env.ENABLE_IMAGE_API?.trim().toLowerCase() === 'true';
+    return isRuntimeImageApiEnabled();
 }
 
 export function hasOpenAiApiKey(): boolean {
-    return !!process.env.OPENAI_API_KEY?.trim();
+    return hasRuntimeOpenAiApiKey();
 }
 
 /**
@@ -54,6 +60,7 @@ export function getImageApiConfiguration() {
     return {
         enabled: isImageApiEnabled(),
         apiKeyConfigured: hasOpenAiApiKey(),
+        apiKeySource: getApiKeySource(),
         mock: isImageApiMockMode()
     };
 }
@@ -86,6 +93,7 @@ function describeProxyForLogs() {
 }
 
 let openAiClient: OpenAI | null = null;
+let openAiClientApiKey: string | null = null;
 let fixtureClient: FixtureImageApiClient | null = null;
 
 export function getImageApiClient(): ImageApiClient {
@@ -94,14 +102,18 @@ export function getImageApiClient(): ImageApiClient {
         return fixtureClient;
     }
 
-    if (!hasOpenAiApiKey()) {
+    const apiKey = getEffectiveApiKey();
+    if (!apiKey) {
         throw new ConfigurationError('OPENAI_API_KEY_MISSING', '服务端未配置 OPENAI_API_KEY。');
     }
 
-    openAiClient ??= new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-        maxRetries: 0
-    });
+    if (!openAiClient || openAiClientApiKey !== apiKey) {
+        openAiClient = new OpenAI({
+            apiKey,
+            maxRetries: 0
+        });
+        openAiClientApiKey = apiKey;
+    }
 
     return new OpenAiImageApiClient(openAiClient);
 }
@@ -207,7 +219,10 @@ class FixtureImageApiClient implements ImageApiClient {
         if (!scenarioFile) return {};
 
         try {
-            const content = await fs.readFile(path.resolve(/*turbopackIgnore: true*/ process.cwd(), scenarioFile), 'utf8');
+            const content = await fs.readFile(
+                path.resolve(/*turbopackIgnore: true*/ process.cwd(), scenarioFile),
+                'utf8'
+            );
             return JSON.parse(content) as MockScenario;
         } catch (error) {
             throw new MockConfigurationError(
@@ -216,7 +231,12 @@ class FixtureImageApiClient implements ImageApiClient {
         }
     }
 
-    private async readFixture(size: string, background: string, format: string, forcedFixture?: string): Promise<Buffer> {
+    private async readFixture(
+        size: string,
+        background: string,
+        format: string,
+        forcedFixture?: string
+    ): Promise<Buffer> {
         if (forcedFixture) {
             const filename = path.basename(forcedFixture);
             try {
@@ -304,7 +324,11 @@ class FixtureImageApiClient implements ImageApiClient {
         };
 
         try {
-            await fs.appendFile(path.resolve(/*turbopackIgnore: true*/ process.cwd(), logFile), `${JSON.stringify(entry)}\n`, 'utf8');
+            await fs.appendFile(
+                path.resolve(/*turbopackIgnore: true*/ process.cwd(), logFile),
+                `${JSON.stringify(entry)}\n`,
+                'utf8'
+            );
         } catch (error) {
             throw new MockConfigurationError(
                 `无法写入 mock 日志：${error instanceof Error ? error.message : String(error)}`

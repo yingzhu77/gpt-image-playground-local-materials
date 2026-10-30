@@ -87,6 +87,8 @@ You need an OpenAI API key to use this application.
 
     **Important:** Keep your API key secret. The `.env.local` file is included in `.gitignore` by default to prevent accidental commits.
 
+    When running locally, you can also use the in-app “配置 API Key / 启用生成” dialog. It sends the key only to the same-origin loopback server (`127.0.0.1` / `localhost`), can update `.env.local` while preserving other lines, and never exposes the key to the browser bundle or storage.
+
 For the local material workflow used in this repository (Chinese setup guide, confirmation flow, size presets, original-byte archival and metadata), see [docs/LOCAL_SETUP.zh-CN.md](docs/LOCAL_SETUP.zh-CN.md).
 
 ---

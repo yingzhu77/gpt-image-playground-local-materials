@@ -67,10 +67,14 @@ NEXT_PUBLIC_IMAGE_STORAGE_MODE=fs
 
 `.env.local.example` 是可提交的模板，不含真实密钥。若本地文件丢失，可复制模板后填写。
 
+也可以不手动编辑：页面顶部的“配置 API Key / 启用生成”按钮（以及无 Key、未启用且非 mock 时自动出现的弹窗）会调用仅限本机的 `/api/local-config`。勾选“保存到本机 .env.local”时，服务端只替换或新增 `OPENAI_API_KEY` 与 `ENABLE_IMAGE_API`，保留代理配置、注释和其他行。通过弹窗保存后本次运行立即生效，无需重启；修改代理等启动变量仍需重启。
+
 ### 4.2 密钥安全
 
-- 只有 `src/lib/server/image-api.ts` 在服务端读取 `OPENAI_API_KEY`。
-- 前端只收到 `auth-status` 的布尔值（是否启用、是否已配置 Key、是否 mock），不会收到 Key。
+- 只有服务端读取 Key：环境变量由 `src/lib/server/runtime-config.ts` 与 `src/lib/server/image-api.ts` 处理，运行时 Key 保存在服务端 `globalThis`。
+- 前端只收到 `auth-status` 的布尔值和来源（`env` / `runtime` / `none`），不会收到 Key、掩码或前缀。
+- 弹窗中的 Key 只存在于该输入框的临时 React 状态；提交后或关闭弹窗时立即清空。它只会出现在发往同源 `/api/local-config` 的 POST 请求体中。
+- `/api/local-config` 只接受 Host 为 `127.0.0.1` / `localhost`、Origin 与 Host 同源、带 `X-Local-Setup: 1` 请求头的 JSON 请求；不设置 CORS，不暴露到局域网。
 - 不要用 `NEXT_PUBLIC_` 前缀保存 Key，不要把 Key 写入 `localStorage`、URL、截图或日志。
 - `.env.local` 已被 `.gitignore` 忽略；`.env.local.example` 被单独放行。
 
@@ -124,15 +128,16 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 
 - 停止：在运行脚本的窗口按 `Ctrl+C`。
 - 再次启动：重新双击 `start-local.cmd`。
-- 修改 `.env.local` 后必须重启服务才会生效。
+- 修改代理等启动时注入的变量后必须重启服务；通过页面弹窗保存 Key 不需要重启。
+- 未勾选持久化的 Key 只存在于当前服务进程；重启后会消失，弹窗会再次自动出现，这是预期行为。
 
 ### 5.3 启动后的配置确认
 
-服务是否启用、Key 是否已配置以 `.env.local` 和页面顶部提示为准；启动日志会打印 `ENABLE_IMAGE_API`、存储模式和 Node 代理状态。真实调用前请确认：
+服务是否启用、Key 是否已配置以页面顶部状态和“配置 API Key / 启用生成”弹窗为准；启动日志会打印 `ENABLE_IMAGE_API`、存储模式和 Node 代理状态。真实调用前请确认：
 
-- `ENABLE_IMAGE_API=true`
-- `OPENAI_API_KEY` 非空
-- 页面没有“生成服务未启用”“未配置 Key”或“MOCK 测试模式”提示
+- 页面显示“Key 已配置 / 生成已启用”
+- 没有“生成服务未启用”“未配置 Key”或“MOCK 测试模式”提示
+- 服务只监听 `127.0.0.1`
 
 首次真实生成的具体步骤见第 10 节。
 
@@ -268,36 +273,29 @@ generated-images/metadata/<本地 request id>.json
 - 错误信息不会把失败自动解释为“未消费”或“免费”。请求一旦发往上游，是否计费以 OpenAI 账单为准。
 - 服务端日志只保留本地请求 ID、上游 request ID（若有）、模式、模型、尺寸、质量、格式、耗时等诊断字段；不记录 Key、Authorization、完整请求体、完整提示词或图片数据。
 
-## 10. 首次真实生成（下一轮由你操作）
+## 10. 首次真实生成（由你手动操作）
 
 本轮结束时 `ENABLE_IMAGE_API=false`，没有发送真实请求。你确认要开始真实调用后：
 
-1. 打开 `.env.local`。
-2. 填写真实 Key（等号后直接写值，不要加引号）：
-   ```dotenv
-   OPENAI_API_KEY=你的真实Key
-   ```
-3. 把开关改为：
-   ```dotenv
-   ENABLE_IMAGE_API=true
-   ```
-4. 保存文件，按 `Ctrl+C` 停止当前服务，再双击 `start-local.cmd` 重启。
-5. 页面打开后，先做一次低成本测试：
+1. 打开 `http://127.0.0.1:3000`。若无 Key、未启用且不是 mock，弹窗会自动出现；也可以点击顶部“配置 API Key / 启用生成”。
+2. 在弹窗中粘贴真实 OpenAI API Key。建议保留“保存到本机 .env.local”勾选；不勾选则只在本次运行中有效，重启后需要重新配置。
+3. 点击“保存并启用真实生成”。保存后不会自动调用 OpenAI；页面应显示“Key 已配置 / 生成已启用”。
+4. 先做一次低成本测试：
    - 模型保持 `gpt-image-2.5-flare`
    - 尺寸保持 `1024×1024`
    - 质量保持 `low`
    - 张数固定 `1`
    - 输出 `PNG`
    - 背景先选 `auto`
-6. 输入一个简单提示词，点击“生成图片（先确认）”。
-7. 在确认框核对完整提示词、模型、尺寸、质量、张数、背景、格式，然后点击“确认并提交”。
-8. 生成成功后检查：
+5. 输入一个简单提示词，点击“生成图片（先确认）”。
+6. 在确认框核对完整提示词、模型、尺寸、质量、张数、背景、格式，然后点击“确认并提交”。
+7. 生成成功后检查：
    - 页面历史中的尺寸、张数、Tokens、费用估算、MOCK 标记（真实请求应无 MOCK）
    - `generated-images/` 中的原图
    - `generated-images/metadata/` 中对应 JSON 的 `usage`、`openai_request_id`、`actual_width/height`
-9. 真实请求会产生费用；本地费用估算不是账单或余额。
+8. 真实请求会产生费用；本地费用估算不是账单或余额。
 
-如果首次调用返回 403，通常是 OpenAI 组织未完成验证或没有该模型权限；返回 401 检查 Key；返回 429 稍后手动重试。
+也可以手动编辑 `.env.local`（填写 `OPENAI_API_KEY`、设置 `ENABLE_IMAGE_API=true`）后重启服务；但不要把 Key 发到聊天、Issue 或截图中。如果首次调用返回 403，通常是 OpenAI 组织未完成验证或没有该模型权限；返回 401 检查 Key；返回 429 稍后手动重试。
 
 ## 11. 无真实 API 的 mock 验收
 
@@ -331,10 +329,10 @@ npm run test:acceptance
 ## 13. 常见问题
 
 **页面能打开，但点击确认后提示“生成服务未启用”**
-：`.env.local` 中 `ENABLE_IMAGE_API` 仍为 `false`，或修改后未重启。
+：`.env.local` 中 `ENABLE_IMAGE_API` 仍为 `false`，或修改后未重启。也可点击顶部“配置 API Key / 启用生成”在本次运行中直接启用。
 
 **提示未配置 OPENAI_API_KEY**
-：开关已为 `true`，但 Key 为空或服务未重启。
+：Key 为空。点击顶部“配置 API Key / 启用生成”粘贴 Key；或填写 `.env.local` 后重启。
 
 **端口 3000 被占用**
 ：直接使用 `start-local.cmd`，它会自动选择下一个空闲端口并打印 URL；不会结束占用端口的进程。
