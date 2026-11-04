@@ -93,6 +93,53 @@ type EditingFormProps = {
     setEditMaskPreviewUrl: React.Dispatch<React.SetStateAction<string | null>>;
 };
 
+const REFERENCE_OPTIMIZE_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
+const REFERENCE_OPTIMIZE_TOTAL_BYTES = 8 * 1024 * 1024;
+const REFERENCE_OPTIMIZE_QUALITY = 0.92;
+
+async function optimizeReferenceImage(file: File, force: boolean): Promise<File> {
+    if (!force && file.size <= REFERENCE_OPTIMIZE_THRESHOLD_BYTES) return file;
+    if (file.size <= 256 * 1024) return file;
+
+    try {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        if (!context) {
+            bitmap.close();
+            return file;
+        }
+
+        context.drawImage(bitmap, 0, 0);
+        bitmap.close();
+
+        const blob = await new Promise<Blob | null>((resolve) => {
+            canvas.toBlob(resolve, 'image/webp', REFERENCE_OPTIMIZE_QUALITY);
+        });
+        if (!blob || blob.type !== 'image/webp' || blob.size >= file.size) return file;
+
+        const baseName = file.name.replace(/\.[^.]+$/, '');
+        return new File([blob], `${baseName}-opt.webp`, {
+            type: 'image/webp',
+            lastModified: file.lastModified
+        });
+    } catch (error) {
+        console.warn('Failed to optimize reference image; using the original file.', error);
+        return file;
+    }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error ?? new Error('Failed to read image file.'));
+        reader.readAsDataURL(file);
+    });
+}
+
 export function EditingForm({
     onSubmit,
     isLoading,
@@ -142,6 +189,7 @@ export function EditingForm({
     setEditMaskPreviewUrl
 }: EditingFormProps) {
     const [firstImagePreviewUrl, setFirstImagePreviewUrl] = React.useState<string | null>(null);
+    const [isOptimizingUploads, setIsOptimizingUploads] = React.useState(false);
 
     const showCompression = editOutputFormat === 'jpeg' || editOutputFormat === 'webp';
     const customSizeValidation =
@@ -153,6 +201,7 @@ export function EditingForm({
     const isDrawing = React.useRef(false);
     const lastPos = React.useRef<{ x: number; y: number } | null>(null);
     const maskInputRef = React.useRef<HTMLInputElement>(null);
+    const imageInputRef = React.useRef<HTMLInputElement>(null);
 
     React.useEffect(() => {
         if (editOriginalImageSize) {
@@ -341,41 +390,38 @@ export function EditingForm({
         }, 'image/png');
     };
 
-    const handleImageFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        if (event.target.files) {
-            const newFiles = Array.from(event.target.files);
-            const totalFiles = imageFiles.length + newFiles.length;
+    const handleImageFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const input = event.currentTarget;
+        const selectedFiles = Array.from(input.files ?? []);
+        input.value = '';
+        if (selectedFiles.length === 0) return;
 
-            if (totalFiles > maxImages) {
-                alert(`You can only select up to ${maxImages} images.`);
-                const allowedNewFiles = newFiles.slice(0, maxImages - imageFiles.length);
-                if (allowedNewFiles.length === 0) {
-                    event.target.value = '';
-                    return;
-                }
-                newFiles.splice(allowedNewFiles.length);
+        let newFiles = selectedFiles;
+        const totalFiles = imageFiles.length + newFiles.length;
+        if (totalFiles > maxImages) {
+            alert(`You can only select up to ${maxImages} images.`);
+            newFiles = newFiles.slice(0, maxImages - imageFiles.length);
+            if (newFiles.length === 0) return;
+        }
+
+        setIsOptimizingUploads(true);
+        try {
+            const selectedBytes = newFiles.reduce((total, file) => total + file.size, 0);
+            const forceOptimize = selectedBytes > REFERENCE_OPTIMIZE_TOTAL_BYTES;
+            const optimizedFiles = await Promise.all(
+                newFiles.map((file) => optimizeReferenceImage(file, forceOptimize))
+            );
+
+            setImageFiles((prevFiles) => [...prevFiles, ...optimizedFiles]);
+
+            try {
+                const newUrls = await Promise.all(optimizedFiles.map(readFileAsDataUrl));
+                setSourceImagePreviewUrls((prevUrls) => [...prevUrls, ...newUrls]);
+            } catch (error) {
+                console.error('Error reading new image files:', error);
             }
-
-            setImageFiles((prevFiles) => [...prevFiles, ...newFiles]);
-
-            const newFilePromises = newFiles.map((file) => {
-                return new Promise<string>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result as string);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                });
-            });
-
-            Promise.all(newFilePromises)
-                .then((newUrls) => {
-                    setSourceImagePreviewUrls((prevUrls) => [...prevUrls, ...newUrls]);
-                })
-                .catch((error) => {
-                    console.error('Error reading new image files:', error);
-                });
-
-            event.target.value = '';
+        } finally {
+            setIsOptimizingUploads(false);
         }
     };
 
@@ -524,7 +570,9 @@ export function EditingForm({
                                 ))}
                             </SelectContent>
                         </Select>
-                        <p className='text-xs text-white/50'>流式预览本轮关闭；点击编辑后先确认参数，不会直接请求 API。</p>
+                        <p className='text-xs text-white/50'>
+                            流式预览本轮关闭；点击编辑后先确认参数，不会直接请求 API。
+                        </p>
                     </div>
 
                     <div className='space-y-1.5'>
@@ -544,23 +592,35 @@ export function EditingForm({
 
                     <div className='space-y-2'>
                         <Label className='text-white'>Source Image(s) [Max: {maxImages}]</Label>
-                        <Label
-                            htmlFor='image-files-input'
-                            className='flex h-10 w-full cursor-pointer items-center justify-between rounded-md border border-white/20 bg-black px-3 py-2 text-sm transition-colors hover:bg-white/5'>
-                            <span className='truncate pr-2 text-white/60'>{displayFileNames(imageFiles)}</span>
+                        <Button
+                            type='button'
+                            variant='outline'
+                            onClick={() => imageInputRef.current?.click()}
+                            disabled={isLoading || isOptimizingUploads || imageFiles.length >= maxImages}
+                            className='flex h-10 w-full cursor-pointer items-center justify-between rounded-md border-white/20 bg-black px-3 py-2 text-sm font-normal text-white/60 transition-colors hover:bg-white/5 hover:text-white/60'>
+                            <span className='truncate pr-2'>{displayFileNames(imageFiles)}</span>
                             <span className='flex shrink-0 items-center gap-1.5 rounded-md bg-white/10 px-3 py-1 text-xs font-medium text-white/80 hover:bg-white/20'>
-                                <Upload className='h-3 w-3' /> Browse...
+                                {isOptimizingUploads ? (
+                                    <Loader2 className='h-3 w-3 animate-spin' />
+                                ) : (
+                                    <Upload className='h-3 w-3' />
+                                )}
+                                {isOptimizingUploads ? '优化中...' : 'Browse...'}
                             </span>
-                        </Label>
+                        </Button>
                         <Input
+                            ref={imageInputRef}
                             id='image-files-input'
                             type='file'
                             accept='image/png, image/jpeg, image/webp'
                             multiple
                             onChange={handleImageFileChange}
-                            disabled={isLoading || imageFiles.length >= maxImages}
-                            className='sr-only'
+                            disabled={isLoading || isOptimizingUploads || imageFiles.length >= maxImages}
+                            className='hidden'
                         />
+                        <p className='text-xs text-white/50'>
+                            较大的参考图会在上传前转为 WebP，以减少大文件上传失败；最终生成的图片不受影响。
+                        </p>
                         {sourceImagePreviewUrls.length > 0 && (
                             <div className='flex space-x-2 overflow-x-auto pt-2'>
                                 {sourceImagePreviewUrls.map((url, index) => (
@@ -675,7 +735,7 @@ export function EditingForm({
                                         type='file'
                                         accept='image/png'
                                         onChange={handleMaskFileChange}
-                                        className='sr-only'
+                                        className='hidden'
                                     />
                                     <div className='flex gap-2'>
                                         <Button

@@ -11,6 +11,9 @@ import path from 'path';
 
 export type ImageEditParams = OpenAI.Images.ImageEditParamsNonStreaming & { moderation?: ImageModeration };
 
+// Long edit requests can outlive idle network limits; partial images keep the SSE response active.
+const STREAM_PARTIAL_IMAGES = 2;
+
 export type ImageApiCallResult = {
     result: OpenAI.Images.ImagesResponse;
     openaiRequestId: string | null;
@@ -37,6 +40,28 @@ export class MockConfigurationError extends Error {
     constructor(message: string) {
         super(message);
         this.name = 'MockConfigurationError';
+    }
+}
+
+export class ImageStreamError extends Error {
+    readonly request_id: string | null;
+    readonly partialImageCount: number;
+    readonly lastEventType: string | null;
+
+    constructor(
+        message: string,
+        options: {
+            cause?: unknown;
+            requestId: string | null;
+            partialImageCount: number;
+            lastEventType: string | null;
+        }
+    ) {
+        super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
+        this.name = 'ImageStreamError';
+        this.request_id = options.requestId;
+        this.partialImageCount = options.partialImageCount;
+        this.lastEventType = options.lastEventType;
     }
 }
 
@@ -129,8 +154,63 @@ class OpenAiImageApiClient implements ImageApiClient {
     }
 
     async edit(params: ImageEditParams): Promise<ImageApiCallResult> {
-        const { data, request_id } = await this.client.images.edit(params).withResponse();
-        return { result: data, openaiRequestId: request_id, mock: false };
+        const { data: stream, request_id } = await this.client.images
+            .edit({ ...params, stream: true, partial_images: STREAM_PARTIAL_IMAGES })
+            .withResponse();
+
+        let completed: OpenAI.Images.ImageEditCompletedEvent | null = null;
+        let partialImageCount = 0;
+        let lastEventType: string | null = null;
+
+        try {
+            for await (const event of stream) {
+                lastEventType = event.type;
+                if (event.type === 'image_edit.partial_image') {
+                    partialImageCount++;
+                }
+                if (event.type === 'image_edit.completed') {
+                    completed = event;
+                }
+            }
+        } catch (error) {
+            const status =
+                typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number'
+                    ? error.status
+                    : undefined;
+            if (status !== undefined) {
+                throw error;
+            }
+
+            throw new ImageStreamError(`OpenAI 流式编辑连接中断（已收到 ${partialImageCount} 个部分图）。`, {
+                cause: error,
+                requestId: request_id,
+                partialImageCount,
+                lastEventType
+            });
+        }
+
+        if (!completed) {
+            throw new ImageStreamError(
+                `OpenAI 流式编辑响应结束，但没有返回最终图片（已收到 ${partialImageCount} 个部分图）。`,
+                {
+                    requestId: request_id,
+                    partialImageCount,
+                    lastEventType
+                }
+            );
+        }
+
+        const result = {
+            created: completed.created_at,
+            data: [{ b64_json: completed.b64_json }],
+            background: completed.background,
+            output_format: completed.output_format,
+            quality: completed.quality,
+            size: completed.size,
+            usage: completed.usage
+        } as OpenAI.Images.ImagesResponse;
+
+        return { result, openaiRequestId: request_id, mock: false };
     }
 }
 

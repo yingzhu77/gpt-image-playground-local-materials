@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { readImageDimensions } from '@/lib/image-dimensions';
 import {
     DEFAULT_GPT_IMAGE_MODEL,
@@ -29,14 +28,9 @@ import {
     type ArchivedOutputImage,
     type ArchivedReferenceImage
 } from '@/lib/server/metadata';
-import {
-    ensureDir,
-    getMetadataDir,
-    getOutputDir,
-    writeImageFile,
-    writeMetadataFile
-} from '@/lib/server/storage';
+import { ensureDir, getMetadataDir, getOutputDir, writeImageFile, writeMetadataFile } from '@/lib/server/storage';
 import { validateCustomSize } from '@/lib/size-utils';
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import type OpenAI from 'openai';
 
@@ -90,11 +84,27 @@ export async function POST(request: NextRequest) {
     let openaiRequestId: string | null = null;
     let storageMode: 'fs' | 'indexeddb' = 'fs';
     let phase = 'preflight';
+    let requestSummary: {
+        model: string;
+        size: string;
+        quality: string;
+        background: string;
+        outputFormat: string;
+        moderation: string;
+        referenceImageCount: number;
+        inputBytes: number;
+        hasMask: boolean;
+    } | null = null;
 
     if (!isImageApiEnabled()) {
-        return errorResponse(503, 'IMAGE_API_DISABLED', '生成服务未启用：请在 .env.local 设置 ENABLE_IMAGE_API=true 后重启服务。', {
-            requestId
-        });
+        return errorResponse(
+            503,
+            'IMAGE_API_DISABLED',
+            '生成服务未启用：请在 .env.local 设置 ENABLE_IMAGE_API=true 后重启服务。',
+            {
+                requestId
+            }
+        );
     }
 
     if (!isImageApiMockMode() && !hasOpenAiApiKey()) {
@@ -126,6 +136,18 @@ export async function POST(request: NextRequest) {
         if (parsed.mode === 'edit' && parsed.imageFiles.length === 0) {
             throw new RequestValidationError('EDIT_IMAGE_REQUIRED', '编辑模式至少需要一张参考图。');
         }
+
+        requestSummary = {
+            model: parsed.model,
+            size: parsed.size,
+            quality: parsed.quality,
+            background: parsed.background,
+            outputFormat: parsed.outputFormat,
+            moderation: parsed.moderation,
+            referenceImageCount: parsed.imageFiles.length,
+            inputBytes: parsed.imageFiles.reduce((total, file) => total + file.size, 0) + (parsed.maskFile?.size ?? 0),
+            hasMask: !!parsed.maskFile
+        };
 
         phase = 'storage';
         if (storageMode === 'fs') {
@@ -260,9 +282,7 @@ export async function POST(request: NextRequest) {
                     outputCompression: parsed.outputCompression,
                     moderation: parsed.moderation,
                     referenceImages: toArchivedReferences(parsed.imageFiles),
-                    mask: parsed.maskFile
-                        ? { filename: parsed.maskFile.name, sizeBytes: parsed.maskFile.size }
-                        : null,
+                    mask: parsed.maskFile ? { filename: parsed.maskFile.name, sizeBytes: parsed.maskFile.size } : null,
                     images: outputs,
                     usage,
                     openaiRequestId,
@@ -321,6 +341,7 @@ export async function POST(request: NextRequest) {
             errorName: error instanceof Error ? error.name : typeof error,
             errorMessage: safeMessage(error).slice(0, 300),
             causeChain: collectErrorCauseChain(error),
+            request: requestSummary,
             dispatched,
             durationMs,
             sdk: getImageApiDiagnostics()
@@ -559,7 +580,12 @@ function imageIndex(key: string): number {
 function mapError(error: unknown, dispatched: boolean) {
     if (error instanceof RequestValidationError) {
         const status = error.code.startsWith('APP_AUTH') ? 401 : 400;
-        return { status, code: error.code, message: error.message, extra: undefined as Record<string, unknown> | undefined };
+        return {
+            status,
+            code: error.code,
+            message: error.message,
+            extra: undefined as Record<string, unknown> | undefined
+        };
     }
     if (error instanceof ConfigurationError) {
         return { status: 503, code: error.code, message: error.message, extra: undefined };
@@ -713,10 +739,7 @@ function collectErrorCauseChain(error: unknown) {
             const item = current as Record<string, unknown>;
             const entry: { name: string; message: string; code?: string; status?: number } = {
                 name: typeof item.name === 'string' ? item.name : 'Error',
-                message:
-                    typeof item.message === 'string'
-                        ? item.message.slice(0, 300)
-                        : String(current).slice(0, 300)
+                message: typeof item.message === 'string' ? item.message.slice(0, 300) : String(current).slice(0, 300)
             };
             if (typeof item.code === 'string') entry.code = item.code;
             if (typeof item.status === 'number') entry.status = item.status;
