@@ -1,6 +1,6 @@
-import { getLimits, getSearchModel, isWorkbenchMock } from '@/lib/workbench/config';
+import { getLimits, getSearchModel, isWorkbenchFixtureTest } from '@/lib/workbench/config';
 import { callResponsesRaw } from '@/lib/workbench/llm';
-import { mockSearchCandidates } from '@/lib/workbench/mock';
+import { fixtureSearchCandidates } from '@/lib/workbench/test-fixtures';
 import { insertCandidates } from '@/lib/workbench/store';
 import type { ReferencePurpose, SearchCandidate, SearchQueryKind } from '@/lib/workbench/types';
 
@@ -110,9 +110,10 @@ export async function searchImages(input: {
     queries: SearchQuery[];
     mock: boolean;
 }): Promise<SearchRunResult> {
+    if (input.mock && !isWorkbenchFixtureTest()) throw new Error('历史测试项目不能发起真实搜索。');
     const limits = getLimits();
-    const model = isWorkbenchMock() || input.mock ? 'mock-search' : getSearchModel();
-    const mock = isWorkbenchMock() || input.mock;
+    const model = isWorkbenchFixtureTest() ? 'mock-search' : getSearchModel();
+    const mock = isWorkbenchFixtureTest();
     const warnings: string[] = [];
 
     const queries = dedupeQueries(input.queries);
@@ -126,7 +127,7 @@ export async function searchImages(input: {
     if (mock) {
         const candidates: SearchCandidate[] = [];
         for (const query of queries) {
-            const generated = await mockSearchCandidates({
+            const generated = await fixtureSearchCandidates({
                 projectId: input.projectId,
                 query: query.query,
                 queryKind: query.kind,

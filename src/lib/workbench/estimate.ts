@@ -1,6 +1,6 @@
 import { getModelRates, tokensToUsd } from '@/lib/cost-utils';
 import { isGptImageModel } from '@/lib/models';
-import { PRICE_TABLE_SOURCE, PRICE_TABLE_VERSION } from '@/lib/workbench/config';
+import { isWorkbenchFixtureTest, PRICE_TABLE_SOURCE, PRICE_TABLE_VERSION } from '@/lib/workbench/config';
 import type { CostEstimate } from '@/lib/workbench/types';
 
 const OUTPUT_TOKENS_BY_QUALITY: Record<string, number> = {
@@ -39,15 +39,16 @@ export function buildCostEstimate(input: {
         '审稿调用使用文本模型，当前未配置文本模型价格表，费用未知。'
     ];
 
-    if (input.mock) {
+    if (input.mock && !isWorkbenchFixtureTest()) throw new Error('历史测试快照不能按真实请求估价或执行。');
+    if (isWorkbenchFixtureTest()) {
         return {
             kind: 'image_batch',
             imageCalls: input.imageCount,
             reviewCalls: input.imageCount,
             totalCalls: input.imageCount * 2,
             estimatedImageUsd: 0,
-            reviewCostNote: 'Mock 模式使用本地夹具与固定文本，不产生真实费用。',
-            assumptions: ['Mock 模式不会调用真实 API，费用为 0 仅表示没有真实请求。'],
+            reviewCostNote: '隔离自动化测试使用本地夹具，不产生真实费用。',
+            assumptions: ['测试提供方不会调用真实 API，费用为 0 仅表示没有真实请求。'],
             priceTableVersion: PRICE_TABLE_VERSION,
             priceTableSource: PRICE_TABLE_SOURCE,
             uncertainty: 'low'

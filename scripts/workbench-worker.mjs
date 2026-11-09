@@ -2,11 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const repoRoot = process.cwd();
-const mock = ['1', 'true'].includes(String(process.env.WORKBENCH_MOCK ?? '').toLowerCase());
+if (['1', 'true'].includes(String(process.env.WORKBENCH_MOCK ?? '').toLowerCase())) {
+    throw new Error('模拟运行模式已移除；请移除 WORKBENCH_MOCK 后重新启动，未发送任务请求。');
+}
 const configuredDataDir = process.env.WORKBENCH_DATA_DIR?.trim();
 const dataDir = path.resolve(
     repoRoot,
-    configuredDataDir || (mock ? path.join('.workbench-data', 'mock') : '.workbench-data')
+    configuredDataDir || '.workbench-data'
 );
 const tokenPath = path.join(dataDir, 'worker-token');
 const baseUrl = (process.env.WORKBENCH_WORKER_URL || `http://127.0.0.1:${process.env.WORKBENCH_PORT || '3000'}`).replace(

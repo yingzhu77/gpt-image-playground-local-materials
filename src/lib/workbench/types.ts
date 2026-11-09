@@ -355,9 +355,6 @@ export type ProjectDetail = {
 };
 
 export type WorkbenchStatus = {
-    mock: boolean;
-    mode: 'mock' | 'real';
-    autoRestartAvailable: boolean;
     imageApiEnabled: boolean;
     apiKeyConfigured: boolean;
     plannerModel: string;

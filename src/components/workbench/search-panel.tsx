@@ -1,8 +1,8 @@
 'use client';
 
-import { Badge, Section, type PanelProps } from '@/components/workbench/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Badge, Section, type PanelProps } from '@/components/workbench/shared';
 import { REFERENCE_PURPOSE_LABELS, type SearchQueryKind } from '@/lib/workbench/types';
 import * as React from 'react';
 
@@ -21,6 +21,7 @@ export function SearchPanel({ detail, status, busy, onAction, requestPaid, notif
         style: ''
     });
     const [localBusy, setLocalBusy] = React.useState(false);
+    const [failedThumbnails, setFailedThumbnails] = React.useState<Record<string, boolean>>({});
     const candidates = detail.candidates;
 
     function suggestQueries() {
@@ -44,7 +45,8 @@ export function SearchPanel({ detail, status, busy, onAction, requestPaid, notif
         }
         requestPaid({
             title: '联网搜索参考图',
-            description: '每条搜索词会发起一次联网图片搜索，只发送搜索词，不发送设计卡或整个项目内容。结果会显示真实来源与未核验状态。',
+            description:
+                '每条搜索词会发起一次联网图片搜索，只发送搜索词，不发送设计卡或整个项目内容。结果会显示真实来源与未核验状态。',
             lines: [
                 `联网搜索调用：${filled.length} 次（上限 ${status.limits.maxSearchQueries}）`,
                 '费用：未知（搜索模型价格未配置）',
@@ -68,15 +70,24 @@ export function SearchPanel({ detail, status, busy, onAction, requestPaid, notif
         });
     }
 
-    async function importCandidate(candidateId: string, bind: boolean, suggestedPurpose: PanelProps['detail']['candidates'][number]['suggestedPurpose']) {
+    async function importCandidate(
+        candidateId: string,
+        bind: boolean,
+        suggestedPurpose: PanelProps['detail']['candidates'][number]['suggestedPurpose']
+    ) {
         setLocalBusy(true);
         try {
             const response = await onAction('candidate.import', { candidateId });
             const asset = response?.asset as { id: string } | undefined;
+            const latest = (response?.project as PanelProps['detail'] | undefined) ?? detail;
             if (bind && asset) {
+                if (latest.references.some((binding) => binding.assetId === asset.id)) {
+                    notify('该图片已在参考组中；现有用途与说明已保留。');
+                    return;
+                }
                 await onAction('references.save', {
                     bindings: [
-                        ...detail.references.map((binding, index) => ({
+                        ...latest.references.map((binding, index) => ({
                             assetId: binding.assetId,
                             purpose: binding.purpose,
                             borrow: binding.borrow,
@@ -88,7 +99,7 @@ export function SearchPanel({ detail, status, busy, onAction, requestPaid, notif
                             purpose: suggestedPurpose,
                             borrow: '',
                             exclude: '',
-                            position: detail.references.length
+                            position: latest.references.length
                         }
                     ]
                 });
@@ -115,97 +126,134 @@ export function SearchPanel({ detail, status, busy, onAction, requestPaid, notif
             <div className='space-y-2'>
                 {QUERY_ROWS.map((row) => (
                     <div key={row.kind} className='space-y-0.5'>
-                        <p className='text-[10px] text-neutral-400'>{row.label}</p>
+                        <label htmlFor={`search-${row.kind}`} className='text-wb-muted text-xs'>
+                            {row.label}
+                        </label>
                         <Input
+                            id={`search-${row.kind}`}
                             value={queries[row.kind]}
                             placeholder={row.placeholder}
-                            onChange={(event) => setQueries((current) => ({ ...current, [row.kind]: event.target.value }))}
-                            className='h-8 border-neutral-700 bg-neutral-950/60 text-[11px]'
+                            onChange={(event) =>
+                                setQueries((current) => ({ ...current, [row.kind]: event.target.value }))
+                            }
+                            className='border-wb-border bg-wb-panel h-9 text-sm'
                         />
                     </div>
                 ))}
             </div>
             <div className='flex items-center justify-between gap-2'>
-                <span className='text-[10px] text-neutral-500'>
-                    {status.mock ? 'Mock 模式：返回本地模拟候选，不代表真实来源' : '联网搜索可能产生费用；结果来源需自行核验'}
-                </span>
-                <Button size='sm' disabled={busy || localBusy} onClick={startSearch}>
+                <span className='text-wb-muted text-xs'>联网搜索可能产生费用；结果来源需自行核验</span>
+                <Button size='sm' variant='outline' disabled={busy || localBusy} onClick={startSearch}>
                     联网搜索
                 </Button>
             </div>
 
             <div className='space-y-2'>
                 <div className='flex items-center justify-between'>
-                    <p className='text-[11px] font-medium text-neutral-300'>候选图（{candidates.length}）</p>
-                    <span className='text-[10px] text-neutral-500'>未选用前不会传给生图模型</span>
+                    <p className='text-wb-ink text-[13px] font-medium'>候选图（{candidates.length}）</p>
+                    <span className='text-wb-muted text-xs'>未选用前不会传给生图模型</span>
                 </div>
                 {candidates.length === 0 && (
-                    <p className='rounded border border-neutral-800 bg-neutral-950/40 p-2 text-[11px] text-neutral-500'>
+                    <p className='border-wb-border bg-wb-panel text-wb-muted rounded border p-2 text-[13px]'>
                         暂无候选。搜索无结果时会显示实际数量，不用无关图片补位。
                     </p>
                 )}
                 <ul className='space-y-2'>
                     {candidates.map((candidate) => (
-                        <li key={candidate.id} className='rounded border border-neutral-800 bg-neutral-950/40 p-2'>
-                            <div className='flex gap-2'>
-                                <div className='w-28 shrink-0'>
-                                    {candidate.thumbnailUrl ? (
+                        <li key={candidate.id} className='border-wb-border bg-wb-panel rounded border p-2'>
+                            <div className='space-y-2'>
+                                <div>
+                                    {candidate.thumbnailUrl && !failedThumbnails[candidate.id] ? (
                                         <img
                                             src={candidate.thumbnailUrl}
                                             alt={candidate.title}
                                             referrerPolicy='no-referrer'
-                                            className='h-20 w-28 rounded border border-neutral-800 object-cover'
+                                            className='border-wb-border aspect-video max-h-40 w-full rounded border object-cover'
+                                            onError={() =>
+                                                setFailedThumbnails((current) => ({ ...current, [candidate.id]: true }))
+                                            }
                                         />
                                     ) : (
-                                        <div className='flex h-20 w-28 items-center justify-center rounded border border-neutral-800 text-[10px] text-neutral-500'>
-                                            无缩略图
+                                        <div className='border-wb-border bg-wb-subtle text-wb-muted flex min-h-24 items-center justify-center rounded border text-xs'>
+                                            {failedThumbnails[candidate.id]
+                                                ? '缩略图加载失败 · 原来源保留'
+                                                : '无缩略图'}
                                         </div>
                                     )}
-                                    <p className='mt-0.5 text-[9px] text-neutral-600'>
+                                    <p className='text-wb-muted mt-0.5 text-xs'>
                                         预览为来源缩略图；导入时下载原图并校验真实字节。
                                     </p>
                                 </div>
                                 <div className='min-w-0 flex-1 space-y-1'>
-                                    <p className='line-clamp-2 text-[11px] text-neutral-200'>{candidate.title}</p>
+                                    <p className='text-wb-ink line-clamp-2 text-[13px]'>{candidate.title}</p>
                                     <div className='flex flex-wrap gap-1'>
-                                        <Badge tone={candidate.status === 'imported' ? 'green' : candidate.status === 'failed' ? 'red' : 'neutral'}>
-                                            {candidate.status === 'imported' ? '已导入' : candidate.status === 'failed' ? '导入失败' : '候选'}
+                                        <Badge
+                                            tone={
+                                                candidate.status === 'imported'
+                                                    ? 'green'
+                                                    : candidate.status === 'failed'
+                                                      ? 'red'
+                                                      : 'neutral'
+                                            }>
+                                            {candidate.status === 'imported'
+                                                ? '已导入'
+                                                : candidate.status === 'failed'
+                                                  ? '导入失败'
+                                                  : '候选'}
                                         </Badge>
-                                        <Badge tone='blue'>{REFERENCE_PURPOSE_LABELS[candidate.suggestedPurpose]}</Badge>
-                                        <Badge>{candidate.queryKind}</Badge>
+                                        <Badge tone='blue'>
+                                            {REFERENCE_PURPOSE_LABELS[candidate.suggestedPurpose]}
+                                        </Badge>
+                                        <Badge>
+                                            {QUERY_ROWS.find((row) => row.kind === candidate.queryKind)?.label ??
+                                                candidate.queryKind}
+                                        </Badge>
+                                        <Badge tone='yellow'>授权未核验</Badge>
                                         <Badge>
                                             {candidate.width && candidate.height
                                                 ? `${candidate.width}×${candidate.height}`
                                                 : '尺寸待导入'}
                                         </Badge>
-                                        {candidate.mock && <Badge tone='purple'>Mock</Badge>}
                                     </div>
                                     <a
                                         href={candidate.pageUrl}
                                         target='_blank'
                                         rel='noreferrer'
-                                        className='block truncate text-[10px] text-blue-300 underline'>
+                                        className='text-wb-info block text-xs break-all underline'>
                                         {candidate.domain} · {candidate.pageUrl}
                                     </a>
-                                    <p className='text-[10px] text-neutral-500'>{candidate.trustNote}</p>
-                                    <p className='text-[10px] text-neutral-500'>{candidate.licenseNote}</p>
-                                    {candidate.error && <p className='text-[10px] text-red-300'>{candidate.error}</p>}
+                                    <p className='text-wb-muted text-xs'>{candidate.trustNote}</p>
+                                    <p className='text-wb-muted text-xs'>{candidate.licenseNote}</p>
+                                    {candidate.error && (
+                                        <p role='alert' className='text-wb-error text-[13px]'>
+                                            导入失败：{candidate.error}
+                                        </p>
+                                    )}
                                     <div className='flex flex-wrap gap-1'>
                                         {candidate.status !== 'imported' && (
                                             <Button
                                                 size='sm'
                                                 variant='outline'
-                                                className='h-6 px-2 text-[10px]'
+                                                className='h-9 px-2 text-xs'
                                                 disabled={busy || localBusy}
-                                                onClick={() => void importCandidate(candidate.id, false, candidate.suggestedPurpose)}>
+                                                onClick={() =>
+                                                    void importCandidate(
+                                                        candidate.id,
+                                                        false,
+                                                        candidate.suggestedPurpose
+                                                    )
+                                                }>
                                                 仅导入
                                             </Button>
                                         )}
                                         <Button
                                             size='sm'
-                                            className='h-6 px-2 text-[10px]'
+                                            variant='outline'
+                                            className='h-9 px-2 text-xs'
                                             disabled={busy || localBusy}
-                                            onClick={() => void importCandidate(candidate.id, true, candidate.suggestedPurpose)}>
+                                            onClick={() =>
+                                                void importCandidate(candidate.id, true, candidate.suggestedPurpose)
+                                            }>
                                             {candidate.status === 'imported' ? '加入参考组' : '导入并加入参考组'}
                                         </Button>
                                     </div>

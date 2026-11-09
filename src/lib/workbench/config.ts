@@ -9,7 +9,7 @@ export const PRICE_TABLE_SOURCE = '应用内 cost-utils 模型费率（参考官
 export function getWorkbenchDataDir(): string {
     const configured = process.env.WORKBENCH_DATA_DIR?.trim();
     const resolved = path.resolve(/*turbopackIgnore: true*/ process.cwd(), configured || DEFAULT_DATA_DIR);
-    return !configured && isWorkbenchMock() ? path.join(/*turbopackIgnore: true*/ resolved, 'mock') : resolved;
+    return resolved;
 }
 
 export function getAssetsDir(): string {
@@ -28,9 +28,24 @@ export function getWorkerTokenPath(): string {
     return path.join(/*turbopackIgnore: true*/ getWorkbenchDataDir(), 'worker-token');
 }
 
-export function isWorkbenchMock(): boolean {
-    const flag = process.env.WORKBENCH_MOCK?.trim().toLowerCase();
-    return flag === '1' || flag === 'true';
+export function isWorkbenchFixtureTest(): boolean {
+    if (['1', 'true'].includes(String(process.env.WORKBENCH_MOCK ?? '').toLowerCase())) {
+        throw new Error('模拟运行模式已移除；请移除 WORKBENCH_MOCK 后重新启动。本次不会转为真实调用。');
+    }
+    if (process.env.WORKBENCH_TEST_FIXTURES !== '1') return false;
+    const configured = process.env.WORKBENCH_DATA_DIR?.trim();
+    const testRoot = path.resolve(/*turbopackIgnore: true*/ process.cwd(), 'test-artifacts');
+    const target = configured ? path.resolve(/*turbopackIgnore: true*/ process.cwd(), configured) : '';
+    const relative = target ? path.relative(testRoot, target) : '..';
+    if (
+        process.env.NODE_ENV === 'production' ||
+        process.env.WORKBENCH_TEST_STRICT_AUTHORIZATION !== '1' ||
+        process.env.OPENAI_API_KEY !== '' ||
+        !configured || !relative || relative.startsWith('..') || path.isAbsolute(relative)
+    ) {
+        throw new Error('测试夹具仅允许在非生产环境、空 Key、严格授权及 test-artifacts 独立数据目录下运行。');
+    }
+    return true;
 }
 
 export function isStrictAuthorizationTest(): boolean {
@@ -108,7 +123,7 @@ export function getLimits() {
 
 export function isLoopbackTestDownloadAllowed(): boolean {
     if (process.env.NODE_ENV === 'production') return false;
-    if (!isWorkbenchMock()) return false;
+    if (!isWorkbenchFixtureTest()) return false;
     return process.env.WORKBENCH_TEST_ALLOW_LOOPBACK === '1';
 }
 

@@ -1,4 +1,4 @@
-import { getCandidateDir, getPlannerModel, getReviewModel } from '@/lib/workbench/config';
+import { getCandidateDir, getPlannerModel, getReviewModel, isWorkbenchFixtureTest } from '@/lib/workbench/config';
 import { computeDesignDiff, mergeDesignProposal, parseAnalysis } from '@/lib/workbench/schema';
 import type {
     AssetAnalysis,
@@ -15,7 +15,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 
-type MockScenario = {
+type FixtureScenario = {
     plannerError?: boolean;
     analysisError?: boolean;
     reviewError?: boolean;
@@ -25,21 +25,22 @@ type MockScenario = {
     searchResults?: number;
 };
 
-export async function readMockScenario(): Promise<MockScenario> {
-    const file = process.env.WORKBENCH_MOCK_SCENARIO_FILE?.trim();
+export async function readFixtureScenario(): Promise<FixtureScenario> {
+    if (!isWorkbenchFixtureTest()) throw new Error('固定测试提供方不可用于普通运行。');
+    const file = process.env.WORKBENCH_TEST_SCENARIO_FILE?.trim();
     if (!file) return {};
     try {
         const content = await fs.readFile(path.resolve(/*turbopackIgnore: true*/ process.cwd(), file), 'utf8');
-        return JSON.parse(content) as MockScenario;
+        return JSON.parse(content) as FixtureScenario;
     } catch {
         return {};
     }
 }
 
-export class MockWorkbenchError extends Error {
+export class FixtureWorkbenchError extends Error {
     constructor(message: string) {
         super(message);
-        this.name = 'MockWorkbenchError';
+        this.name = 'FixtureWorkbenchError';
     }
 }
 
@@ -96,13 +97,13 @@ function caseBCard(input: string): DesignCard {
     };
 }
 
-export async function mockCreateDesignDraft(input: {
+export async function fixtureCreateDesignDraft(input: {
     text: string;
     entry: 'keyword' | 'upload';
     hasUpload: boolean;
 }): Promise<{ name: string; card: DesignCard }> {
-    const scenario = await readMockScenario();
-    if (scenario.plannerError) throw new MockWorkbenchError('模拟规划失败：未发送真实请求。');
+    const scenario = await readFixtureScenario();
+    if (scenario.plannerError) throw new FixtureWorkbenchError('模拟规划失败：未发送真实请求。');
 
     const isStage = /舞台|布景|阿米娅.*(走|街景)|侧背面/.test(input.text);
     const card = isStage ? caseACard() : caseBCard(input.text);
@@ -133,13 +134,13 @@ const FIELD_KEYWORDS: { field: ScalarDesignField; pattern: RegExp }[] = [
     { field: 'aspectRatio', pattern: /比例|尺寸|横构图|竖构图|16:9|9:16/ }
 ];
 
-export async function mockUpdateDesign(input: {
+export async function fixtureUpdateDesign(input: {
     instruction: string;
     current: DesignCard;
     lockedFields: Parameters<typeof mergeDesignProposal>[0]['lockedFields'];
 }): Promise<DesignUpdateResult> {
-    const scenario = await readMockScenario();
-    if (scenario.plannerError) throw new MockWorkbenchError('模拟规划失败：未发送真实请求。');
+    const scenario = await readFixtureScenario();
+    if (scenario.plannerError) throw new FixtureWorkbenchError('模拟规划失败：未发送真实请求。');
 
     const proposed: DesignCard = JSON.parse(JSON.stringify(input.current)) as DesignCard;
     const matches = FIELD_KEYWORDS.filter((entry) => entry.pattern.test(input.instruction));
@@ -177,9 +178,9 @@ export async function mockUpdateDesign(input: {
     return mergeDesignProposal({ current: input.current, proposed, lockedFields: input.lockedFields });
 }
 
-export async function mockAnalyzeAsset(asset: AssetMeta): Promise<AssetAnalysis> {
-    const scenario = await readMockScenario();
-    if (scenario.analysisError) throw new MockWorkbenchError('模拟视觉分析失败：未发送真实请求。');
+export async function fixtureAnalyzeAsset(asset: AssetMeta): Promise<AssetAnalysis> {
+    const scenario = await readFixtureScenario();
+    if (scenario.analysisError) throw new FixtureWorkbenchError('模拟视觉分析失败：未发送真实请求。');
 
     const name = `${asset.originalName} ${asset.filename}`.toLowerCase();
     let purpose: ReferencePurpose = 'style';
@@ -211,13 +212,13 @@ export async function mockAnalyzeAsset(asset: AssetMeta): Promise<AssetAnalysis>
     return parseAnalysis(analysis);
 }
 
-export async function mockReview(input: {
+export async function fixtureReview(input: {
     label: string;
     secondLabel?: string;
     design: DesignCard;
 }): Promise<ReviewResult> {
-    const scenario = await readMockScenario();
-    if (scenario.reviewError) throw new MockWorkbenchError('模拟审稿失败：未发送真实请求。');
+    const scenario = await readFixtureScenario();
+    if (scenario.reviewError) throw new FixtureWorkbenchError('模拟审稿失败：未发送真实请求。');
 
     const issues =
         scenario.reviewIssues === 'none'
@@ -260,15 +261,15 @@ export async function mockReview(input: {
 
 const MOCK_COLORS = ['#5b6c8f', '#8f6b5b', '#5b8f76', '#8f5b7d', '#6b5b8f', '#8f825b'];
 
-export async function mockSearchCandidates(input: {
+export async function fixtureSearchCandidates(input: {
     projectId: string;
     query: string;
     queryKind: SearchQueryKind;
     suggestedPurpose: ReferencePurpose;
     count: number;
 }): Promise<Omit<SearchCandidate, 'id' | 'createdAt' | 'status' | 'assetId' | 'error'>[]> {
-    const scenario = await readMockScenario();
-    if (scenario.searchError) throw new MockWorkbenchError('模拟联网搜图失败：未发送真实请求。');
+    const scenario = await readFixtureScenario();
+    if (scenario.searchError) throw new FixtureWorkbenchError('模拟联网搜图失败：未发送真实请求。');
     if (scenario.searchEmpty) return [];
 
     const dir = getCandidateDir();
@@ -297,8 +298,8 @@ export async function mockSearchCandidates(input: {
             query: input.query,
             queryKind: input.queryKind,
             title: `模拟候选 ${index + 1}：${input.query.slice(0, 40)}`,
-            imageUrl: `/api/workbench/mock-candidate/${filename}`,
-            thumbnailUrl: `/api/workbench/mock-candidate/${filename}`,
+            imageUrl: `/api/workbench/test-fixture/${filename}`,
+            thumbnailUrl: `/api/workbench/test-fixture/${filename}`,
             pageUrl: `https://example.com/mock/${input.queryKind}/${hash}/${index}`,
             domain: 'example.com（模拟）',
             trustNote: '模拟候选，未进行真实联网搜索，来源未核验，不代表任何真实来源',
@@ -312,13 +313,13 @@ export async function mockSearchCandidates(input: {
     return results;
 }
 
-export function mockModels() {
+export function fixtureModels() {
     return {
         planner: getPlannerModel(),
         review: getReviewModel()
     };
 }
 
-export function mockDesignDiff(before: DesignCard, after: DesignCard) {
+export function fixtureDesignDiff(before: DesignCard, after: DesignCard) {
     return computeDesignDiff(before, after);
 }

@@ -111,7 +111,6 @@ type ImageApiResponse = {
 type ImageApiStatus = {
     enabled: boolean;
     apiKeyConfigured: boolean;
-    mock: boolean;
 };
 
 type RequestResultMeta = {
@@ -119,7 +118,6 @@ type RequestResultMeta = {
     openaiRequestId?: string | null;
     metadataFile?: string | null;
     metadataError?: string | null;
-    mock?: boolean;
     warnings?: string[];
 };
 
@@ -256,15 +254,13 @@ export default function HomePage() {
             setIsPasswordRequiredByBackend(data.passwordRequired === true);
             const status: ImageApiStatus = {
                 enabled: data.imageApiEnabled === true,
-                apiKeyConfigured: data.apiKeyConfigured === true,
-                mock: data.imageApiMock === true
+                apiKeyConfigured: data.apiKeyConfigured === true
             };
             setImageApiStatus(status);
 
             if (
                 options?.autoPrompt &&
                 !hasAutoPromptedApiKeyRef.current &&
-                !status.mock &&
                 !status.apiKeyConfigured &&
                 !status.enabled
             ) {
@@ -303,7 +299,7 @@ export default function HomePage() {
             setApiKeyConfigNotice(persisted ? null : warning);
             const status = await refreshImageApiStatus();
             if (!status) {
-                setImageApiStatus({ enabled: true, apiKeyConfigured: true, mock: false });
+                setImageApiStatus({ enabled: true, apiKeyConfigured: true });
             }
         },
         [refreshImageApiStatus]
@@ -455,7 +451,6 @@ export default function HomePage() {
             requestId: meta.requestId,
             openaiRequestId: meta.openaiRequestId ?? null,
             metadataFile: meta.metadataFile ?? null,
-            isMock: !!meta.mock,
             archiveWarning: meta.metadataError ?? null
         };
 
@@ -526,13 +521,7 @@ export default function HomePage() {
         setLatestOutputIsTransparent(snapshot.background === 'transparent' && snapshot.output_format === 'png');
         setHistory((prevHistory) => [newHistoryEntry, ...prevHistory]);
 
-        if (meta.mock) {
-            setWarning(
-                `当前结果来自 MOCK 测试数据，未调用真实 OpenAI API，也不代表真实费用、模型权限或生成质量。${
-                    warnings.length > 0 ? ` ${warnings.join(' ')}` : ''
-                }`
-            );
-        } else if (warnings.length > 0) {
+        if (warnings.length > 0) {
             setWarning(warnings.join(' '));
         }
     };
@@ -675,6 +664,10 @@ export default function HomePage() {
                 throw new Error(result.error || `API request failed with status ${response.status}`);
             }
 
+            if (result.mock === true) {
+                throw new Error('返回内容来自已停用的测试通道，未作为真实作品展示或保存。');
+            }
+
             if (!result.images || result.images.length === 0) {
                 setLatestImageBatch(null);
                 throw new Error('API response did not contain valid image data or filenames.');
@@ -686,7 +679,6 @@ export default function HomePage() {
                 openaiRequestId: result.openai_request_id,
                 metadataFile: result.metadata_file,
                 metadataError: result.metadata_error,
-                mock: result.mock,
                 warnings: Array.isArray(result.warnings) ? result.warnings : []
             });
         } catch (err: unknown) {
@@ -748,31 +740,48 @@ export default function HomePage() {
     );
 
     const handleClearHistory = React.useCallback(async () => {
+        const retainedHistory = history.filter((item) => item.isMock === true);
+        const visibleHistory = history.filter((item) => item.isMock !== true);
         const confirmationMessage =
             effectiveStorageModeClient === 'indexeddb'
-                ? 'Are you sure you want to clear the entire image history? In IndexedDB mode, this will also permanently delete all stored images. This cannot be undone.'
-                : 'Are you sure you want to clear the entire image history? This cannot be undone.';
+                ? '确定清空当前创作历史及其浏览器图片？此操作无法撤销。历史测试记录及其图片会保留。'
+                : '确定清空当前创作历史？此操作无法撤销。历史测试记录会保留。';
 
         if (window.confirm(confirmationMessage)) {
-            setHistory([]);
+            setHistory(retainedHistory);
             setLatestImageBatch(null);
             setImageOutputView('grid');
             setError(null);
 
             try {
-                localStorage.removeItem('openaiImageHistory');
+                localStorage.setItem('openaiImageHistory', JSON.stringify(retainedHistory));
 
                 if (effectiveStorageModeClient === 'indexeddb') {
-                    await db.images.clear();
-                    blobUrlCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
-                    blobUrlCacheRef.current.clear();
+                    const filesFor = (items: HistoryMetadata[]) =>
+                        new Set(
+                            items.flatMap((item) => [
+                                ...(item.images ?? []).map((image) => image.filename),
+                                ...(item.inputFiles?.map((image) => image.filename) ?? []),
+                                ...(item.markupFilename ? [item.markupFilename] : [])
+                            ])
+                        );
+                    const retainedFiles = filesFor(retainedHistory);
+                    const removedFiles = [...filesFor(visibleHistory)].filter(
+                        (filename) => !retainedFiles.has(filename)
+                    );
+                    await db.images.bulkDelete(removedFiles);
+                    removedFiles.forEach((filename) => {
+                        const url = blobUrlCacheRef.current.get(filename);
+                        if (url) URL.revokeObjectURL(url);
+                        blobUrlCacheRef.current.delete(filename);
+                    });
                 }
             } catch (e) {
                 console.error('Failed during history clearing:', e);
                 setError(`Failed to clear history: ${e instanceof Error ? e.message : String(e)}`);
             }
         }
-    }, []);
+    }, [history]);
 
     const handleSendToEdit = async (filename: string) => {
         if (isSendingToEdit) return;
@@ -909,14 +918,11 @@ export default function HomePage() {
         setItemToDeleteConfirm(null);
     }, []);
 
-    const isImageApiReady =
-        imageApiStatus?.enabled === true && imageApiStatus.apiKeyConfigured === true && imageApiStatus.mock !== true;
+    const isImageApiReady = imageApiStatus?.enabled === true && imageApiStatus.apiKeyConfigured === true;
 
     let apiKeyStatusLabel = '正在读取配置...';
     if (imageApiStatus) {
-        if (imageApiStatus.mock) {
-            apiKeyStatusLabel = 'MOCK 测试模式';
-        } else if (isImageApiReady) {
+        if (isImageApiReady) {
             apiKeyStatusLabel = 'Key 已配置 / 生成已启用';
         } else if (imageApiStatus.apiKeyConfigured) {
             apiKeyStatusLabel = 'Key 已配置 / 生成未启用';
@@ -1005,22 +1011,12 @@ export default function HomePage() {
                         </AlertDescription>
                     </Alert>
                 )}
-                {imageApiStatus?.enabled && !imageApiStatus.apiKeyConfigured && !imageApiStatus.mock && (
+                {imageApiStatus?.enabled && !imageApiStatus.apiKeyConfigured && (
                     <Alert data-testid='api-status-banner' className='border-red-500/50 bg-red-900/20 text-red-200'>
                         <AlertTitle className='text-red-100'>未配置 OPENAI_API_KEY</AlertTitle>
                         <AlertDescription className='text-red-200/80'>
                             服务端开关已启用，但仍缺少 Key。点击上方“配置 API Key / 启用生成”粘贴
                             Key；浏览器不会保存或显示该 Key。
-                        </AlertDescription>
-                    </Alert>
-                )}
-                {imageApiStatus?.mock && (
-                    <Alert
-                        data-testid='mock-status-banner'
-                        className='border-purple-500/50 bg-purple-900/20 text-purple-200'>
-                        <AlertTitle className='text-purple-100'>MOCK 测试模式</AlertTitle>
-                        <AlertDescription className='text-purple-200/80'>
-                            当前结果来自固定 fixture，不会调用真实 OpenAI，也不代表真实费用、模型权限或生成质量。
                         </AlertDescription>
                     </Alert>
                 )}

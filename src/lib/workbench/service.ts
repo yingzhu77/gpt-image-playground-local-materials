@@ -14,7 +14,7 @@ import {
     getWorkerToken,
     isLoopbackTestDownloadAllowed,
     isStrictAuthorizationTest,
-    isWorkbenchMock,
+    isWorkbenchFixtureTest,
     PLANNER_REASONING_EFFORTS,
     PRICE_TABLE_SOURCE,
     PRICE_TABLE_VERSION,
@@ -22,7 +22,6 @@ import {
 } from '@/lib/workbench/config';
 import { buildCostEstimate } from '@/lib/workbench/estimate';
 import { SafeDownloadError, safeDownloadImage } from '@/lib/workbench/fetcher';
-import { getCurrentRuntimeMode, getModeWatcherStatus } from '@/lib/workbench/mode-switch';
 import { createDesignDraft, updateDesign } from '@/lib/workbench/planner';
 import { compilePrompt } from '@/lib/workbench/prompt';
 import {
@@ -110,11 +109,7 @@ const OUTPUT_FORMATS: readonly ImageOutputFormat[] = ['png', 'jpeg', 'webp'];
 export function getWorkbenchStatus(): WorkbenchStatus {
     const imageApi = getImageApiConfiguration();
     const heartbeat = getWorkerHeartbeat();
-    const watcher = getModeWatcherStatus();
     return {
-        mock: isWorkbenchMock(),
-        mode: getCurrentRuntimeMode(),
-        autoRestartAvailable: watcher.available,
         imageApiEnabled: imageApi.enabled,
         apiKeyConfigured: imageApi.apiKeyConfigured,
         plannerModel: getPlannerModel(),
@@ -143,23 +138,29 @@ export function getWorkbenchStatus(): WorkbenchStatus {
 }
 
 export function listProjectsWithStatus(): { projects: ProjectSummary[]; status: WorkbenchStatus } {
-    return { projects: listProjects(), status: getWorkbenchStatus() };
+    return { projects: listProjects().filter((project) => !project.mock || isWorkbenchFixtureTest()), status: getWorkbenchStatus() };
 }
 
 export function getProjectDetail(projectId: string): ProjectDetail | null {
     const data = getProjectData(projectId);
-    if (!data) return null;
+    if (!data || (data.project.mock && !isWorkbenchFixtureTest())) return null;
     return { ...data, status: getWorkbenchStatus() };
 }
 
 function requireProject(projectId: string): StoredProject {
     const project = getProjectData(projectId);
     if (!project) throw new WorkbenchError(404, 'PROJECT_NOT_FOUND', '项目不存在。');
+    if (project.project.mock && !isWorkbenchFixtureTest()) {
+        throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试项目已隔离，不能发起真实调用；原始数据仍保留。');
+    }
     return project;
 }
 
-function isMockProject(project: StoredProject): boolean {
-    return project.project.mock || isWorkbenchMock();
+function isFixtureProject(project: StoredProject): boolean {
+    if ((project.project.mock || project.references.some((reference) => reference.asset.mock)) && !isWorkbenchFixtureTest()) {
+        throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试项目不能发起真实调用。');
+    }
+    return isWorkbenchFixtureTest();
 }
 
 function resolvePlannerSettings(input: { plannerModel?: unknown; reasoningEffort?: unknown }): {
@@ -193,7 +194,6 @@ function resolvePlannerSettings(input: { plannerModel?: unknown; reasoningEffort
 }
 
 function requirePaidConfirmation(confirmed: boolean, actionLabel: string, detail: string) {
-    if (isWorkbenchMock()) return;
     if (!confirmed) {
         throw new WorkbenchError(
             402,
@@ -217,7 +217,7 @@ export async function createProjectFromInput(input: {
     requirePaidConfirmation(input.confirmPlanner, '整理设计方向（1 次规划调用）', '未知（规划文本模型价格未配置）');
     const planner = resolvePlannerSettings(input);
 
-    const mock = isWorkbenchMock();
+    const mock = isWorkbenchFixtureTest();
     const draft = await createDesignDraft({
         text,
         entry: input.entry,
@@ -291,7 +291,7 @@ export async function updateDesignFromInstruction(input: {
         current: project.design,
         lockedFields: project.lockedFields,
         references: project.references,
-        mock: isMockProject(project),
+        mock: isFixtureProject(project),
         model: planner.model,
         reasoningEffort: planner.reasoningEffort
     });
@@ -332,7 +332,7 @@ export async function uploadAsset(input: {
         originalName: input.originalName,
         kind: 'upload',
         projectId: project.project.id,
-        mock: isMockProject(project),
+        mock: isFixtureProject(project),
         declaredMime: input.declaredMime
     });
     return asset;
@@ -350,12 +350,13 @@ export async function analyzeAsset(input: {
     }
     const asset = getAsset(input.assetId);
     if (!asset) throw new WorkbenchError(404, 'ASSET_NOT_FOUND', '素材不存在。');
+    if (asset.mock && !isWorkbenchFixtureTest()) throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试素材不能发送到真实模型。');
     requirePaidConfirmation(
         input.confirmAnalysis,
         '视觉分析参考图（1 次视觉模型调用）',
         '未知（视觉模型价格未配置）'
     );
-    const analysis = await analyzeReference({ asset, mock: isMockProject(project) });
+    const analysis = await analyzeReference({ asset, mock: isFixtureProject(project) });
     return { analysis, asset: getAsset(input.assetId)! };
 }
 
@@ -401,6 +402,9 @@ export function saveBindings(input: {
         if (!assetId || seen.has(assetId)) return;
         const asset = getAsset(assetId);
         if (!asset) return;
+        if (asset.mock && !isWorkbenchFixtureTest()) {
+            throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试素材不能绑定到真实项目。');
+        }
         seen.add(assetId);
         const purpose = isReferencePurposeValue(record.purpose) ? record.purpose : 'style';
         normalized.push({
@@ -474,7 +478,7 @@ export async function runSearch(input: {
     return searchImages({
         projectId: input.projectId,
         queries: input.queries,
-        mock: isMockProject(project)
+        mock: isFixtureProject(project)
     });
 }
 
@@ -483,6 +487,9 @@ export async function importCandidate(input: { projectId: string; candidateId: s
     const candidate = getCandidate(input.candidateId);
     if (!candidate || candidate.projectId !== input.projectId) {
         throw new WorkbenchError(404, 'CANDIDATE_NOT_FOUND', '候选图不存在。');
+    }
+    if (candidate.mock && !isWorkbenchFixtureTest()) {
+        throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试候选图不能导入真实项目。');
     }
     if (candidate.assetId) {
         const existing = getAsset(candidate.assetId);
@@ -493,7 +500,7 @@ export async function importCandidate(input: { projectId: string; candidateId: s
         let bytes: Buffer;
         let originalName = `search-${candidate.id.slice(0, 8)}.png`;
 
-        if (candidate.mock) {
+        if (candidate.mock && isWorkbenchFixtureTest()) {
             const filename = path.basename(new URL(candidate.imageUrl, 'http://127.0.0.1').pathname);
             const filepath = path.join(/*turbopackIgnore: true*/ getCandidateDir(), filename);
             const fs = await import('node:fs/promises');
@@ -528,7 +535,7 @@ export async function importCandidate(input: { projectId: string; candidateId: s
 }
 
 export function libraryAssets(): AssetMeta[] {
-    return listLibraryAssets();
+    return listLibraryAssets().filter((asset) => !asset.mock || isWorkbenchFixtureTest());
 }
 
 function normalizeParams(input: Partial<CreateRunInput>) {
@@ -611,7 +618,7 @@ function actionKey(actionId: string | undefined): string {
 
 export function estimateRunPreview(input: { projectId: string; body: Partial<CreateRunInput> }) {
     const project = requireProject(input.projectId);
-    const mock = isMockProject(project);
+    const mock = isFixtureProject(project);
     const params = normalizeParams(input.body);
     const prompt = project.prompt.text.trim()
         ? project.prompt
@@ -663,7 +670,7 @@ export async function createGenerationRun(input: {
         return { run: existing, reused: true };
     }
 
-    const mock = isMockProject(project);
+    const mock = isFixtureProject(project);
     const params = normalizeParams(input.body);
 
     let prompt = project.prompt;
@@ -720,7 +727,7 @@ export async function createGenerationRun(input: {
             moderation: params.moderation,
             imageCount: params.imageCount
         },
-        review: { enabled: true, model: mock ? 'mock-review' : getReviewModel() },
+        review: { enabled: true, model: getReviewModel() },
         operation: { action: 'generate' },
         estimate,
         authorization,
@@ -754,12 +761,15 @@ export async function createRevisionRun(input: {
         return { run: existing, reused: true };
     }
 
-    const mock = isMockProject(project);
+    const mock = isFixtureProject(project);
     const baseVersionId = input.body.baseVersionId;
     if (!baseVersionId) throw new WorkbenchError(400, 'BASE_VERSION_REQUIRED', '请先选择要修订的结果。');
     const version = getVersion(baseVersionId);
     if (!version || version.projectId !== input.projectId) {
         throw new WorkbenchError(404, 'VERSION_NOT_FOUND', '修订基底不存在。');
+    }
+    if ((version.mock || version.asset.mock) && !isWorkbenchFixtureTest()) {
+        throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试版本不能作为真实修订基底。');
     }
     const changePoints = (input.body.changePoints ?? []).map((item) => String(item).trim()).filter(Boolean);
     if (changePoints.length < 1 || changePoints.length > 2) {
@@ -849,6 +859,7 @@ export async function createRerollRun(input: {
     projectId: string;
     actionId?: string;
     sourceRunId: string;
+    imageCount?: 1 | 2;
     budgetUsd: number;
     riskAcknowledged: boolean;
 }): Promise<{ run: RunSummary; reused: boolean }> {
@@ -862,21 +873,28 @@ export async function createRerollRun(input: {
         return { run: existing, reused: true };
     }
 
-    const mock = isMockProject(project);
+    const mock = isFixtureProject(project);
     const source = getRun(input.sourceRunId);
     if (!source || source.projectId !== input.projectId) {
         throw new WorkbenchError(404, 'SOURCE_RUN_NOT_FOUND', '指定的运行不存在。');
+    }
+    if ((source.mock || source.snapshot.mock) && !isWorkbenchFixtureTest()) {
+        throw new WorkbenchError(409, 'TEST_DATA_NOT_EXECUTABLE', '历史测试任务不能作为真实再抽来源。');
     }
     if (source.action === 'revise') {
         throw new WorkbenchError(400, 'REROLL_UNSUPPORTED', '修订运行不能直接再抽；请从原始生成运行再抽，或对结果再修一版。');
     }
 
     const params = source.snapshot.params;
+    const imageCount = input.imageCount === undefined ? params.imageCount : input.imageCount;
+    if ((imageCount !== 1 && imageCount !== 2) || imageCount > params.imageCount) {
+        throw new WorkbenchError(400, 'INVALID_IMAGE_COUNT', '再抽数量必须为 1 或 2，且不能超过原批次数量。');
+    }
     const estimate = buildCostEstimate({
         model: params.model,
         size: params.size,
         quality: params.quality,
-        imageCount: params.imageCount,
+        imageCount,
         promptChars: source.snapshot.prompt.length + source.snapshot.avoid.length,
         referencePixels: source.snapshot.references.map((item) => {
             const asset = getAsset(item.assetId);
@@ -893,6 +911,7 @@ export async function createRerollRun(input: {
 
     const snapshot: RunSnapshot = {
         ...source.snapshot,
+        params: { ...params, imageCount },
         operation: { action: 'reroll', sourceRunId: source.id },
         estimate,
         authorization,
@@ -906,7 +925,7 @@ export async function createRerollRun(input: {
         snapshot,
         sourceRunId: source.id,
         mock,
-        imageCount: params.imageCount
+        imageCount
     });
     return { run: created.run, reused: !created.created };
 }
@@ -970,7 +989,7 @@ export async function forkProject(input: {
             references: project.references.filter((binding) =>
                 ['character', 'face', 'style'].includes(binding.purpose)
             ),
-            mock: isMockProject(project),
+            mock: isFixtureProject(project),
             model: planner.model,
             reasoningEffort: planner.reasoningEffort
         });
@@ -982,7 +1001,7 @@ export async function forkProject(input: {
         entry: project.project.entry,
         design: card,
         lockedFields: project.lockedFields,
-        mock: isMockProject(project),
+        mock: isFixtureProject(project),
         plannerModel: instruction ? planner.model : null,
         reasoningEffort: instruction ? planner.reasoningEffort : null
     });

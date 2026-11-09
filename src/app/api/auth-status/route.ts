@@ -11,8 +11,7 @@ export async function GET() {
             passwordRequired: appPasswordSet,
             imageApiEnabled: imageApi.enabled,
             apiKeyConfigured: imageApi.apiKeyConfigured,
-            apiKeySource: imageApi.apiKeySource,
-            imageApiMock: imageApi.mock
+            apiKeySource: imageApi.apiKeySource
         },
         {
             headers: {

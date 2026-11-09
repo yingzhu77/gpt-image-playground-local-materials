@@ -20,8 +20,8 @@ import {
     getImageApiDiagnostics,
     hasOpenAiApiKey,
     isImageApiEnabled,
-    isImageApiMockMode,
-    MockConfigurationError,
+    isImageApiFixtureTest,
+    FixtureConfigurationError,
     type ImageEditParams
 } from '@/lib/server/image-api';
 import {
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
         );
     }
 
-    if (!isImageApiMockMode() && !hasOpenAiApiKey()) {
+    if (!isImageApiFixtureTest() && !hasOpenAiApiKey()) {
         return errorResponse(
             503,
             'OPENAI_API_KEY_MISSING',
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
         }
 
         phase = 'dispatch';
-        const client = getImageApiClient();
+        const client = getImageApiClient({ localRequestId: requestId });
         const imageParams = {
             n: 1,
             size: parsed.size,
@@ -373,7 +373,7 @@ export async function POST(request: NextRequest) {
             requestId,
             openaiRequestId: errorRequestId,
             billableUnknown: dispatched,
-            mock: isImageApiMockMode(),
+            mock: isImageApiFixtureTest(),
             durationMs,
             extra: mapped.extra
         });
@@ -657,11 +657,11 @@ function mapError(error: unknown, dispatched: boolean) {
     if (error instanceof ConfigurationError) {
         return { status: 503, code: error.code, message: error.message, extra: undefined };
     }
-    if (error instanceof MockConfigurationError) {
+    if (error instanceof FixtureConfigurationError) {
         return {
             status: 500,
-            code: 'MOCK_CONFIGURATION_ERROR',
-            message: `Mock 测试配置错误：${error.message} 未发送任何真实 OpenAI 请求。`,
+            code: 'TEST_FIXTURE_CONFIGURATION_ERROR',
+            message: `隔离测试配置错误：${error.message} 未发送任何真实 OpenAI 请求。`,
             extra: undefined
         };
     }

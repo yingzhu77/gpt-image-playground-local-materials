@@ -1,181 +1,71 @@
 'use client';
 
-import { Badge, Spinner, type PaidRequest, type PanelProps } from '@/components/workbench/shared';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { formatUsd, newActionId, projectAction, workbenchFetch } from '@/lib/workbench/client';
+import { Badge, Spinner, type PaidRequest, type PanelProps } from '@/components/workbench/shared';
 import { supportsExtendedQuality, type GptImageModel } from '@/lib/models';
 import { validateCustomSize } from '@/lib/size-utils';
-import type { CostEstimate, ProjectDetail, RunSummary, VersionRecord, WorkbenchStatus } from '@/lib/workbench/types';
+import { formatTime, formatUsd, newActionId, projectAction } from '@/lib/workbench/client';
+import {
+    REFERENCE_PURPOSE_LABELS,
+    type CostEstimate,
+    type ProjectDetail,
+    type RunSummary,
+    type VersionRecord,
+    type WorkbenchStatus
+} from '@/lib/workbench/types';
 import * as React from 'react';
 
-export function PaidConfirmDialog({
-    request,
-    onClose
-}: {
-    request: PaidRequest | null;
-    onClose: () => void;
-}) {
+export function PaidConfirmDialog({ request, onClose }: { request: PaidRequest | null; onClose: () => void }) {
     const [busy, setBusy] = React.useState(false);
+    const [failure, setFailure] = React.useState<{ request: PaidRequest; message: string } | null>(null);
     async function confirm() {
         if (!request) return;
         setBusy(true);
+        setFailure(null);
         try {
             await request.onConfirm();
             onClose();
+        } catch (error) {
+            setFailure({ request, message: error instanceof Error ? error.message : '操作失败，请检查错误信息。' });
         } finally {
             setBusy(false);
         }
     }
     return (
         <Dialog open={!!request} onOpenChange={(open) => (!open && !busy ? onClose() : undefined)}>
-            <DialogContent className='border-neutral-800 bg-neutral-950'>
+            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink'>
                 <DialogHeader>
                     <DialogTitle>{request?.title ?? ''}</DialogTitle>
                     <DialogDescription>{request?.description ?? ''}</DialogDescription>
                 </DialogHeader>
-                <ul className='space-y-1 rounded border border-neutral-800 bg-neutral-900/60 p-2 text-[11px] text-neutral-300'>
+                <ul className='border-wb-border bg-wb-subtle text-wb-ink space-y-1 rounded border p-2 text-xs'>
                     {request?.lines.map((line, index) => (
                         <li key={index}>• {line}</li>
                     ))}
                 </ul>
+                {failure?.request === request && (
+                    <p role='alert' className='text-wb-error text-sm leading-relaxed'>
+                        {failure.message}
+                    </p>
+                )}
                 <DialogFooter>
                     <Button variant='outline' disabled={busy} onClick={onClose}>
                         取消
                     </Button>
                     <Button disabled={busy} onClick={() => void confirm()}>
-                        {busy ? <Spinner label='执行中' /> : request?.confirmLabel ?? '确认'}
+                        {busy ? <Spinner label='执行中' /> : (request?.confirmLabel ?? '确认')}
                     </Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
-    );
-}
-
-export function ModeSwitchDialog({
-    status,
-    onClose
-}: {
-    status: WorkbenchStatus;
-    onClose: () => void;
-}) {
-    const target = status.mock ? 'real' : 'mock';
-    const [confirmed, setConfirmed] = React.useState(false);
-    const [busy, setBusy] = React.useState(false);
-    const [message, setMessage] = React.useState<string | null>(null);
-    const [timedOut, setTimedOut] = React.useState(false);
-    const manualCommand =
-        target === 'mock'
-            ? "$env:WORKBENCH_MOCK='1'; node scripts/start-local.mjs"
-            : 'node scripts/start-local.mjs';
-
-    async function switchMode() {
-        setBusy(true);
-        setMessage(null);
-        setTimedOut(false);
-        try {
-            await workbenchFetch<{ ok: boolean; message?: string }>('/api/workbench/mode', {
-                method: 'POST',
-                body: JSON.stringify({ mode: target, confirm: true })
-            });
-            const deadline = Date.now() + 30000;
-            while (Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-                try {
-                    const response = await workbenchFetch<{ status: WorkbenchStatus }>('/api/workbench/status');
-                    if (response.status.mock === (target === 'mock')) {
-                        window.location.assign('/workbench');
-                        return;
-                    }
-                } catch {
-                    // Web is restarting.
-                }
-            }
-            setTimedOut(true);
-            setBusy(false);
-        } catch (error) {
-            setMessage(error instanceof Error ? error.message : '切换模式失败。');
-            setBusy(false);
-        }
-    }
-
-    return (
-        <Dialog open onOpenChange={(open) => (!open && !busy ? onClose() : undefined)}>
-            <DialogContent className='max-w-xl border-neutral-800 bg-neutral-950'>
-                <DialogHeader>
-                    <DialogTitle>切换运行模式</DialogTitle>
-                    <DialogDescription>
-                        当前：{status.mock ? 'Mock 模式（本地夹具，不调用真实 API）' : '真实模式（使用 .env.local 配置）'}
-                    </DialogDescription>
-                </DialogHeader>
-                <div className='space-y-2 text-[11px] text-neutral-300'>
-                    <p>
-                        目标：{target === 'mock' ? 'Mock 模式' : '真实模式'}。切换会停止当前 Web 与 worker，并用对应数据目录重启；
-                        {target === 'mock'
-                            ? 'Mock 数据在 .workbench-data/mock，不会读取真实 Key。'
-                            : '真实模式读取 .env.local 中的 Key，任何已确认的规划/搜索/审稿/生图都可能产生真实费用。'}
-                    </p>
-                    <p className='text-neutral-500'>
-                        切换要求当前没有排队或执行中的任务。发布中的在途请求不会被自动取消；如有任务请先等待或停止。
-                    </p>
-                    {target === 'real' && (
-                        <p className='rounded border border-yellow-700/40 bg-yellow-950/20 p-2 text-yellow-100'>
-                            真实模式的默认规划/分析/审稿/搜索模型为 gpt-6.1-sol（也可在顶栏切换），生图仍为 gpt-image 模型。
-                        </p>
-                    )}
-                    {!status.autoRestartAvailable && (
-                        <div className='space-y-1 rounded border border-blue-700/40 bg-blue-950/20 p-2 text-blue-100'>
-                            <p>未检测到可自动重启的启动器（scripts/start-local.mjs）。请手动停止当前服务后运行：</p>
-                            <code className='block break-all rounded bg-black/40 px-2 py-1 text-[10px]'>{manualCommand}</code>
-                            <Button
-                                size='sm'
-                                variant='outline'
-                                className='h-6 border-blue-600/50 px-2 text-[10px] text-blue-100'
-                                onClick={() => {
-                                    void navigator.clipboard.writeText(manualCommand);
-                                    setMessage('命令已复制。');
-                                }}>
-                                复制命令
-                            </Button>
-                        </div>
-                    )}
-                    {status.autoRestartAvailable && (
-                        <label className='flex items-start gap-2 rounded border border-neutral-700 bg-neutral-900/60 p-2'>
-                            <input
-                                type='checkbox'
-                                checked={confirmed}
-                                onChange={(event) => setConfirmed(event.target.checked)}
-                                className='mt-0.5 accent-amber-500'
-                            />
-                            <span>
-                                {target === 'mock'
-                                    ? '我确认切换到 Mock 模式，之后不会调用真实 API。'
-                                    : '我确认切换到真实模式；之后的付费操作会产生真实费用，且需要我逐次确认。'}
-                            </span>
-                        </label>
-                    )}
-                    {message && <p className='text-[11px] text-red-300'>{message}</p>}
-                    {timedOut && (
-                        <div className='rounded border border-yellow-700/40 bg-yellow-950/20 p-2 text-yellow-100'>
-                            未在 30 秒内检测到新模式。请查看启动窗口是否报错，或手动重启：
-                            <code className='mt-1 block break-all rounded bg-black/40 px-2 py-1 text-[10px]'>{manualCommand}</code>
-                        </div>
-                    )}
-                </div>
-                <DialogFooter>
-                    <Button variant='outline' disabled={busy} onClick={onClose}>
-                        关闭
-                    </Button>
-                    {status.autoRestartAvailable && (
-                        <Button
-                            disabled={busy || !confirmed}
-                            onClick={() => void switchMode()}>
-                            {busy ? <Spinner label='正在重启' /> : `切换到${target === 'mock' ? ' Mock' : '真实'}模式`}
-                        </Button>
-                    )}
                 </DialogFooter>
             </DialogContent>
         </Dialog>
@@ -199,18 +89,16 @@ export function PlannerSettingsDialog({
     const [nextEffort, setNextEffort] = React.useState(effort);
     return (
         <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-            <DialogContent className='border-neutral-800 bg-neutral-950'>
+            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink'>
                 <DialogHeader>
                     <DialogTitle>规划设置</DialogTitle>
-                    <DialogDescription>
-                        仅影响设计卡规划与自然语言修改；不会生图、不会搜索。
-                    </DialogDescription>
+                    <DialogDescription>仅影响设计卡规划与自然语言修改；不会生图、不会搜索。</DialogDescription>
                 </DialogHeader>
                 <div className='space-y-3'>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>规划模型</p>
+                        <p className='text-wb-muted text-xs'>规划模型</p>
                         <Select value={nextModel} onValueChange={setNextModel}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                            <SelectTrigger aria-label='规划模型' className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -222,14 +110,14 @@ export function PlannerSettingsDialog({
                                 ))}
                             </SelectContent>
                         </Select>
-                        <p className='text-[10px] text-neutral-500'>
+                        <p className='text-wb-muted text-xs'>
                             允许列表由 WORKBENCH_PLANNER_MODELS 控制；服务端会拒绝列表外模型。
                         </p>
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>思考强度（reasoning.effort）</p>
+                        <p className='text-wb-muted text-xs'>思考强度（reasoning.effort）</p>
                         <Select value={nextEffort} onValueChange={setNextEffort}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                            <SelectTrigger aria-label='思考强度' className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -241,18 +129,16 @@ export function PlannerSettingsDialog({
                                 ))}
                             </SelectContent>
                         </Select>
-                        <p className='text-[10px] text-neutral-500'>
-                            gpt-6.1-sol 支持 low / medium / high / xhigh / max，默认 medium，不支持 none。非 reasoning 模型可能拒绝该参数。
+                        <p className='text-wb-muted text-xs'>
+                            gpt-6.1-sol 支持 low / medium / high / xhigh / max，默认 medium，不支持 none。非 reasoning
+                            模型可能拒绝该参数。
                         </p>
                     </div>
-                    {status.mock && (
-                        <p className='rounded border border-purple-700/40 bg-purple-950/20 p-2 text-[10px] text-purple-200'>
-                            Mock 模式只记录选择，不发送模型请求；切换到真实模式后生效。
-                        </p>
-                    )}
                 </div>
                 <DialogFooter>
-                    <Button variant='outline' onClick={onClose}>取消</Button>
+                    <Button variant='outline' onClick={onClose}>
+                        取消
+                    </Button>
                     <Button
                         onClick={() => {
                             onSave(nextModel, nextEffort);
@@ -321,33 +207,50 @@ export function GenerateDialog({
     const [height, setHeight] = React.useState(1152);
     const [budgetUsd, setBudgetUsd] = React.useState(1);
     const [risk, setRisk] = React.useState(false);
-    const [preview, setPreview] = React.useState<{ estimate: CostEstimate; budgetMinUsd: number | null; promptStale: boolean; referenceCount: number } | null>(null);
+    const [preview, setPreview] = React.useState<{
+        estimate: CostEstimate;
+        budgetMinUsd: number | null;
+        promptStale: boolean;
+        referenceCount: number;
+    } | null>(null);
     const [previewError, setPreviewError] = React.useState<string | null>(null);
+    const [previewKey, setPreviewKey] = React.useState('');
+    const [submitError, setSubmitError] = React.useState<string | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [actionId] = React.useState(() => newActionId());
 
     const resolvedSize = resolveSize(params.size, width, height);
     const customValidation = params.size === 'custom' ? validateCustomSize(width, height) : { valid: true as const };
+    const estimateKey = JSON.stringify([detail.project.id, params, resolvedSize, budgetUsd]);
+    const currentPreview = previewKey === estimateKey ? preview : null;
 
     React.useEffect(() => {
         let cancelled = false;
         const timer = setTimeout(() => {
             if (params.size === 'custom' && !customValidation.valid) return;
-            void projectAction<{ preview: { estimate: CostEstimate; budgetMinUsd: number | null; promptStale: boolean; referenceCount: number } }>(
-                detail.project.id,
-                {
-                    action: 'run.estimate',
-                    run: {
-                        action: 'generate',
-                        ...params,
-                        size: resolvedSize,
-                        budgetUsd,
-                        riskAcknowledged: true
-                    }
+            void projectAction<{
+                preview: {
+                    estimate: CostEstimate;
+                    budgetMinUsd: number | null;
+                    promptStale: boolean;
+                    referenceCount: number;
+                };
+            }>(detail.project.id, {
+                action: 'run.estimate',
+                run: {
+                    action: 'generate',
+                    ...params,
+                    size: resolvedSize,
+                    budgetUsd,
+                    riskAcknowledged: true
                 }
-            )
+            })
                 .then((response) => {
-                    if (!cancelled) setPreview(response.preview);
+                    if (!cancelled) {
+                        setPreview(response.preview);
+                        setPreviewKey(estimateKey);
+                        setPreviewError(null);
+                    }
                 })
                 .catch((error: unknown) => {
                     if (!cancelled) setPreviewError(error instanceof Error ? error.message : '估价失败。');
@@ -357,10 +260,11 @@ export function GenerateDialog({
             cancelled = true;
             clearTimeout(timer);
         };
-    }, [detail.project.id, params, resolvedSize, width, height, budgetUsd, customValidation.valid]);
+    }, [detail.project.id, params, resolvedSize, width, height, budgetUsd, customValidation.valid, estimateKey]);
 
     async function submit() {
         setBusy(true);
+        setSubmitError(null);
         setError(null);
         try {
             const response = await onAction('run.create', {
@@ -374,96 +278,168 @@ export function GenerateDialog({
                 }
             });
             const reused = response?.reused === true;
-            notify(reused ? '相同动作已存在，已返回同一任务（未重复提交）。' : '已创建生成任务；可关闭页面，worker 会继续执行。');
+            notify(
+                reused
+                    ? '相同动作已存在，已返回同一任务（未重复提交）。'
+                    : '已创建生成任务；可关闭页面，worker 会继续执行。'
+            );
             onClose();
         } catch (error) {
-            setError(error instanceof Error ? error.message : '创建任务失败。');
+            const message = error instanceof Error ? error.message : '创建任务失败。';
+            setSubmitError(message);
+            setError(message);
         } finally {
             setBusy(false);
         }
     }
 
     const qualityOptions = status.models.quality.filter(
-        (quality) => supportsExtendedQuality(params.model as GptImageModel) || (quality !== 'xhigh' && quality !== 'max')
+        (quality) =>
+            supportsExtendedQuality(params.model as GptImageModel) || (quality !== 'xhigh' && quality !== 'max')
     );
     const canSubmit =
         !busy &&
+        !!currentPreview &&
         !detail.prompt.stale &&
         detail.prompt.text.trim().length > 0 &&
         (params.size !== 'custom' || customValidation.valid) &&
         budgetUsd > 0 &&
-        (status.mock || risk);
+        risk;
 
     return (
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
-            <DialogContent className='max-h-[90vh] max-w-2xl overflow-y-auto border-neutral-800 bg-neutral-950'>
+            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
                 <DialogHeader>
                     <DialogTitle>确认生成批次</DialogTitle>
-                    <DialogDescription>
-                        确认后保存不可变快照；之后再改草稿或参考组不会影响本批次。
-                    </DialogDescription>
+                    <DialogDescription>确认后保存不可变快照；之后再改草稿或参考组不会影响本批次。</DialogDescription>
                 </DialogHeader>
+                {submitError && (
+                    <p role='alert' className='text-wb-error text-sm leading-relaxed'>
+                        {submitError}
+                    </p>
+                )}
+
+                <div className='border-wb-border bg-wb-accent-soft text-wb-ink space-y-2 rounded-md border p-3 text-sm'>
+                    <p className='font-medium'>将发送已保存的设计 v{detail.project.designVersion}</p>
+                    <p className='text-wb-muted text-xs'>
+                        提示词{detail.prompt.source === 'manual' ? '手动版' : '编译版'} · 保存于{' '}
+                        {formatTime(detail.prompt.updatedAt)}
+                    </p>
+                    <details>
+                        <summary className='text-wb-accent cursor-pointer text-xs'>展开完整已保存内容</summary>
+                        <div className='mt-3 space-y-3'>
+                            <div>
+                                <p className='text-wb-muted mb-1 text-xs font-medium'>主提示词</p>
+                                <pre className='bg-wb-panel max-h-64 overflow-auto rounded-md p-3 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap'>
+                                    {detail.prompt.text || '尚未保存提示词'}
+                                </pre>
+                            </div>
+                            <div>
+                                <p className='text-wb-muted mb-1 text-xs font-medium'>避免项</p>
+                                <p className='text-sm leading-relaxed whitespace-pre-wrap'>
+                                    {detail.prompt.avoid || '未设置'}
+                                </p>
+                            </div>
+                            <div>
+                                <p className='text-wb-muted mb-1 text-xs font-medium'>验收项</p>
+                                <p className='text-sm leading-relaxed whitespace-pre-wrap'>
+                                    {detail.prompt.acceptance || '未设置'}
+                                </p>
+                            </div>
+                        </div>
+                    </details>
+                </div>
 
                 {detail.prompt.stale && (
-                    <div className='rounded border border-red-700/50 bg-red-950/30 p-2 text-[11px] text-red-200'>
+                    <div className='border-wb-error bg-wb-subtle text-wb-error rounded border p-2 text-xs'>
                         提示词已过期。请先在提示词面板保留手动版或重新编译后再生成。
                     </div>
                 )}
 
                 <div className='grid gap-3 sm:grid-cols-2'>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>模型</p>
-                        <Select value={params.model} onValueChange={(value) => setParams((current) => ({ ...current, model: value }))}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                        <p className='text-wb-muted text-xs'>模型</p>
+                        <Select
+                            value={params.model}
+                            onValueChange={(value) => setParams((current) => ({ ...current, model: value }))}>
+                            <SelectTrigger aria-label='图像模型' className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 {status.models.image.map((model) => (
-                                    <SelectItem key={model} value={model}>{model}</SelectItem>
+                                    <SelectItem key={model} value={model}>
+                                        {model}
+                                    </SelectItem>
                                 ))}
                             </SelectContent>
                         </Select>
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>尺寸</p>
-                        <Select value={params.size} onValueChange={(value) => setParams((current) => ({ ...current, size: value }))}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                        <p className='text-wb-muted text-xs'>尺寸</p>
+                        <Select
+                            value={params.size}
+                            onValueChange={(value) => setParams((current) => ({ ...current, size: value }))}>
+                            <SelectTrigger aria-label='图像尺寸' className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 {SIZE_OPTIONS.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                    <SelectItem key={option.value} value={option.value}>
+                                        {option.label}
+                                    </SelectItem>
                                 ))}
                             </SelectContent>
                         </Select>
                         {params.size === 'custom' && (
                             <div className='flex items-center gap-1'>
-                                <Input type='number' value={width} onChange={(event) => setWidth(Number(event.target.value))} className='h-8 w-24 border-neutral-700 bg-neutral-900 text-xs' />
-                                <span className='text-xs text-neutral-500'>×</span>
-                                <Input type='number' value={height} onChange={(event) => setHeight(Number(event.target.value))} className='h-8 w-24 border-neutral-700 bg-neutral-900 text-xs' />
+                                <Input
+                                    aria-label='自定义宽度'
+                                    type='number'
+                                    value={width}
+                                    onChange={(event) => setWidth(Number(event.target.value))}
+                                    className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
+                                />
+                                <span className='text-wb-muted text-xs'>×</span>
+                                <Input
+                                    aria-label='自定义高度'
+                                    type='number'
+                                    value={height}
+                                    onChange={(event) => setHeight(Number(event.target.value))}
+                                    className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
+                                />
                             </div>
                         )}
                         {params.size === 'custom' && !customValidation.valid && (
-                            <p className='text-[10px] text-red-300'>{customValidation.reason}</p>
+                            <p className='text-wb-error text-xs'>{customValidation.reason}</p>
                         )}
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>质量</p>
-                        <Select value={params.quality} onValueChange={(value) => setParams((current) => ({ ...current, quality: value }))}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                        <p className='text-wb-muted text-xs'>质量</p>
+                        <Select
+                            value={params.quality}
+                            onValueChange={(value) => setParams((current) => ({ ...current, quality: value }))}>
+                            <SelectTrigger aria-label='图像质量' className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
                                 {qualityOptions.map((quality) => (
-                                    <SelectItem key={quality} value={quality}>{quality}</SelectItem>
+                                    <SelectItem key={quality} value={quality}>
+                                        {quality}
+                                    </SelectItem>
                                 ))}
                             </SelectContent>
                         </Select>
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>数量（独立结果）</p>
-                        <Select value={String(params.imageCount)} onValueChange={(value) => setParams((current) => ({ ...current, imageCount: Number(value) === 2 ? 2 : 1 }))}>
-                            <SelectTrigger className='border-neutral-700 bg-neutral-900 text-xs'>
+                        <p className='text-wb-muted text-xs'>数量（独立结果）</p>
+                        <Select
+                            value={String(params.imageCount)}
+                            onValueChange={(value) =>
+                                setParams((current) => ({ ...current, imageCount: Number(value) === 2 ? 2 : 1 }))
+                            }>
+                            <SelectTrigger
+                                aria-label='生成图片数量'
+                                className='border-wb-border bg-wb-panel h-9 text-sm'>
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -473,82 +449,105 @@ export function GenerateDialog({
                         </Select>
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>本次预算上限（USD，应用内约束）</p>
+                        <p className='text-wb-muted text-xs'>本次预算上限（USD，应用内约束）</p>
                         <Input
+                            aria-label='预算上限（USD）'
                             type='number'
                             min={0.01}
                             step={0.01}
                             value={budgetUsd}
                             onChange={(event) => setBudgetUsd(Number(event.target.value))}
-                            className='h-8 border-neutral-700 bg-neutral-900 text-xs'
+                            className='border-wb-border bg-wb-panel h-9 text-sm'
                         />
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-[11px] text-neutral-400'>参考图</p>
-                        <p className='rounded border border-neutral-800 bg-neutral-900/60 px-2 py-1.5 text-[11px] text-neutral-300'>
-                            {preview?.referenceCount ?? detail.references.length} 张 · 按已保存顺序发送
+                        <p className='text-wb-muted text-xs'>参考图</p>
+                        <p className='border-wb-border bg-wb-subtle text-wb-ink rounded border px-2 py-1.5 text-xs'>
+                            {currentPreview?.referenceCount ?? detail.references.length} 张 · 按已保存顺序发送
                         </p>
                     </div>
                 </div>
 
-                <div className='space-y-1 rounded border border-neutral-800 bg-neutral-900/50 p-2 text-[11px] text-neutral-300'>
-                    <p className='text-[10px] text-neutral-400'>
-                        设计 v{detail.project.designVersion} · 提示词{detail.prompt.source === 'manual' ? '手动版' : '编译版'} ·
-                        锁定项 {detail.lockedFields.length} 个
+                <div className='border-wb-border bg-wb-subtle text-wb-ink space-y-1 rounded border p-2 text-xs'>
+                    <p className='text-wb-muted text-xs'>
+                        设计 v{detail.project.designVersion} · 提示词
+                        {detail.prompt.source === 'manual' ? '手动版' : '编译版'} · 锁定项 {detail.lockedFields.length}{' '}
+                        个
                     </p>
-                    <p className='text-[10px] text-neutral-500'>
+                    <p className='text-wb-muted text-xs'>
                         参考顺序：
                         {[...detail.references]
                             .sort((a, b) => a.position - b.position)
-                            .map((binding, index) => `${index + 1}. ${binding.purpose}（${binding.asset.originalName}）`)
+                            .map(
+                                (binding, index) =>
+                                    `${index + 1}. ${REFERENCE_PURPOSE_LABELS[binding.purpose]}（${binding.asset.originalName}）`
+                            )
                             .join(' / ') || '无'}
                     </p>
                     <div className='flex flex-wrap items-center gap-1.5'>
-                        <Badge tone={status.mock ? 'purple' : 'yellow'}>{status.mock ? 'Mock 模式：不会调用真实 API' : '真实调用'}</Badge>
-                        {preview && (
+                        <Badge tone='yellow'>真实调用</Badge>
+                        {currentPreview && (
                             <>
-                                <Badge>生图 {preview.estimate.imageCalls} 次</Badge>
-                                <Badge>审稿 {preview.estimate.reviewCalls} 次</Badge>
-                                <Badge tone={preview.estimate.estimatedImageUsd === null ? 'yellow' : 'neutral'}>
-                                    图片估算 {formatUsd(preview.estimate.estimatedImageUsd)}
+                                <Badge>生图 {currentPreview.estimate.imageCalls} 次</Badge>
+                                <Badge>审稿 {currentPreview.estimate.reviewCalls} 次</Badge>
+                                <Badge tone={currentPreview.estimate.estimatedImageUsd === null ? 'yellow' : 'neutral'}>
+                                    图片估算 {formatUsd(currentPreview.estimate.estimatedImageUsd)}
                                 </Badge>
                             </>
                         )}
                     </div>
-                    {previewError && <p className='text-red-300'>{previewError}</p>}
-                    {preview && (
+                    {!currentPreview && !previewError && (
+                        <p className='text-wb-info text-sm' role='status'>
+                            正在估算当前参数，请稍候确认。
+                        </p>
+                    )}
+                    {previewError && <p className='text-wb-error'>{previewError}</p>}
+                    {currentPreview && (
                         <>
-                            <p className='text-neutral-400'>{preview.estimate.reviewCostNote}</p>
-                            <p className='text-neutral-500'>价格表 {preview.estimate.priceTableVersion}：{preview.estimate.priceTableSource}</p>
+                            <p className='text-wb-muted'>{currentPreview.estimate.reviewCostNote}</p>
+                            <p className='text-wb-muted'>
+                                价格表 {currentPreview.estimate.priceTableVersion}：
+                                {currentPreview.estimate.priceTableSource}
+                            </p>
                             <details>
-                                <summary className='cursor-pointer text-neutral-500'>估价假设与不确定性</summary>
-                                <ul className='mt-1 space-y-0.5 text-[10px] text-neutral-500'>
-                                    {preview.estimate.assumptions.map((item, index) => (
+                                <summary className='text-wb-muted cursor-pointer'>估价假设与不确定性</summary>
+                                <ul className='text-wb-muted mt-1 space-y-0.5 text-xs'>
+                                    {currentPreview.estimate.assumptions.map((item, index) => (
                                         <li key={index}>• {item}</li>
                                     ))}
                                 </ul>
                             </details>
-                            {preview.budgetMinUsd !== null && budgetUsd < preview.budgetMinUsd && (
-                                <p className='text-red-300'>预算低于单张估算（约 {formatUsd(preview.budgetMinUsd)}），服务端会拒绝。</p>
+                            {currentPreview.budgetMinUsd !== null && budgetUsd < currentPreview.budgetMinUsd && (
+                                <p className='text-wb-error'>
+                                    预算低于单张估算（约 {formatUsd(currentPreview.budgetMinUsd)}），服务端会拒绝。
+                                </p>
                             )}
                         </>
                     )}
-                    <p className='text-[10px] text-neutral-500'>此面板的估价请求不发送模型调用；提交时服务端会重新计算并校验调用上限。</p>
+                    <p className='text-wb-muted text-xs'>
+                        此面板的估价请求不发送模型调用；提交时服务端会重新计算并校验调用上限。
+                    </p>
                 </div>
 
-                {!status.mock && (
-                    <label className='flex items-start gap-2 rounded border border-yellow-700/40 bg-yellow-950/20 p-2 text-[11px] text-yellow-100'>
-                        <input type='checkbox' checked={risk} onChange={(event) => setRisk(event.target.checked)} className='mt-0.5 accent-amber-500' />
-                        <span>
-                            我确认：本次包含 {params.imageCount} 次生图与 {params.imageCount} 次审稿调用；审稿文本模型费用未知，图片费用为估算而非账单。超出预算或结果未知时系统会暂停后续付费调用。
-                        </span>
-                    </label>
-                )}
+                <label className='border-wb-warning bg-wb-subtle text-wb-warning flex items-start gap-2 rounded border p-2 text-xs'>
+                    <input
+                        type='checkbox'
+                        checked={risk}
+                        onChange={(event) => setRisk(event.target.checked)}
+                        className='accent-wb-accent mt-0.5'
+                    />
+                    <span>
+                        我确认：本次包含 {params.imageCount} 次生图与 {params.imageCount}{' '}
+                        次审稿调用；审稿文本模型费用未知，图片费用为估算而非账单。超出预算或结果未知时系统会暂停后续付费调用。
+                    </span>
+                </label>
 
                 <DialogFooter>
-                    <Button variant='outline' disabled={busy} onClick={onClose}>取消</Button>
+                    <Button variant='outline' disabled={busy} onClick={onClose}>
+                        取消
+                    </Button>
                     <Button disabled={!canSubmit} onClick={() => void submit()}>
-                        {busy ? <Spinner label='提交中' /> : status.mock ? '确认生成（Mock）' : '确认生成（真实调用）'}
+                        {busy ? <Spinner label='提交中' /> : '确认生成（真实调用）'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -559,7 +558,6 @@ export function GenerateDialog({
 export function RevisionDialog({
     onClose,
     detail,
-    status,
     baseVersion,
     initialSuggestions,
     onAction,
@@ -575,12 +573,16 @@ export function RevisionDialog({
     notify: (message: string) => void;
     setError: (message: string | null) => void;
 }) {
-    const baseRun = baseVersion ? detail.runs.find((run) => run.id === baseVersion.runId) ?? null : null;
+    const baseRun = baseVersion ? (detail.runs.find((run) => run.id === baseVersion.runId) ?? null) : null;
     const suggestedChanges = initialSuggestions.filter((item) => item.change);
     const [change1, setChange1] = React.useState(suggestedChanges[0]?.change ?? '');
     const [change2, setChange2] = React.useState(suggestedChanges[1]?.change ?? '');
+    const [submitError, setSubmitError] = React.useState<string | null>(null);
     const [keep, setKeep] = React.useState(
-        initialSuggestions.map((item) => item.keep).filter(Boolean).join('\n')
+        initialSuggestions
+            .map((item) => item.keep)
+            .filter(Boolean)
+            .join('\n')
     );
     const [budgetUsd, setBudgetUsd] = React.useState(1);
     const [risk, setRisk] = React.useState(false);
@@ -592,9 +594,12 @@ export function RevisionDialog({
     const params = baseRun.snapshot.params;
 
     async function submit() {
+        setSubmitError(null);
         const changePoints = [change1, change2].map((item) => item.trim()).filter(Boolean);
         if (changePoints.length < 1 || changePoints.length > 2) {
-            setError('请填写 1–2 个明确的修改点。');
+            const message = '请填写 1–2 个明确的修改点。';
+            setSubmitError(message);
+            setError(message);
             return;
         }
         setBusy(true);
@@ -606,7 +611,10 @@ export function RevisionDialog({
                     action: 'revise',
                     baseVersionId: base.id,
                     changePoints,
-                    keepPoints: keep.split('\n').map((item) => item.trim()).filter(Boolean),
+                    keepPoints: keep
+                        .split('\n')
+                        .map((item) => item.trim())
+                        .filter(Boolean),
                     imageCount: 1,
                     model: params.model,
                     size: params.size,
@@ -618,10 +626,16 @@ export function RevisionDialog({
                     riskAcknowledged: risk
                 }
             });
-            notify(response?.reused === true ? '相同修订动作已存在，已返回同一任务。' : '已创建定向修订任务（只执行一次编辑）。');
+            notify(
+                response?.reused === true
+                    ? '相同修订动作已存在，已返回同一任务。'
+                    : '已创建定向修订任务（只执行一次编辑）。'
+            );
             onClose();
         } catch (error) {
-            setError(error instanceof Error ? error.message : '创建修订失败。');
+            const message = error instanceof Error ? error.message : '创建修订失败。';
+            setSubmitError(message);
+            setError(message);
         } finally {
             setBusy(false);
         }
@@ -629,54 +643,94 @@ export function RevisionDialog({
 
     return (
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
-            <DialogContent className='max-h-[90vh] max-w-2xl overflow-y-auto border-neutral-800 bg-neutral-950'>
+            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
                 <DialogHeader>
                     <DialogTitle>定向修订 {base.label}</DialogTitle>
                     <DialogDescription>
                         基底固定为版本 {base.label}；参考图按原快照辅助。只执行一次编辑，新版本保留父版本关系。
                     </DialogDescription>
                 </DialogHeader>
-                <div className='flex gap-3'>
+                {submitError && (
+                    <p role='alert' className='text-wb-error text-sm leading-relaxed'>
+                        {submitError}
+                    </p>
+                )}
+                <div className='flex flex-col gap-3 sm:flex-row'>
                     <img
                         src={`/api/workbench/assets/${base.assetId}/file`}
                         alt={base.label}
-                        className='h-32 w-56 rounded border border-neutral-800 object-contain'
+                        className='border-wb-border bg-wb-stage h-32 w-full rounded border object-contain sm:w-56'
                     />
-                    <div className='space-y-1 text-[11px] text-neutral-400'>
+                    <div className='text-wb-muted space-y-1 text-xs'>
                         <p>模型：{params.model}</p>
-                        <p>尺寸：{params.size} · 质量：{params.quality}</p>
+                        <p>
+                            尺寸：{params.size} · 质量：{params.quality}
+                        </p>
                         <p>参考图：{baseRun.snapshot.references.length} 张（沿用原快照）</p>
                         <p>动作：1 次图像编辑 + 1 次审稿</p>
-                        <p className='text-yellow-200/80'>锁定项表示流程不擅自改要求，不保证像素完全不变。</p>
+                        <p className='text-wb-warning'>锁定项表示流程不擅自改要求，不保证像素完全不变。</p>
                     </div>
                 </div>
                 <div className='space-y-2'>
                     <div>
-                        <p className='text-[11px] text-neutral-400'>修改点 1（必填）</p>
-                        <Textarea rows={2} value={change1} onChange={(event) => setChange1(event.target.value)} className='border-neutral-700 bg-neutral-900 text-xs' />
+                        <p className='text-wb-muted text-xs'>修改点 1（必填）</p>
+                        <Textarea
+                            aria-label='修改点 1（必填）'
+                            rows={2}
+                            value={change1}
+                            onChange={(event) => setChange1(event.target.value)}
+                            className='border-wb-border bg-wb-panel text-sm'
+                        />
                     </div>
                     <div>
-                        <p className='text-[11px] text-neutral-400'>修改点 2（可选）</p>
-                        <Textarea rows={2} value={change2} onChange={(event) => setChange2(event.target.value)} className='border-neutral-700 bg-neutral-900 text-xs' />
+                        <p className='text-wb-muted text-xs'>修改点 2（可选）</p>
+                        <Textarea
+                            aria-label='修改点 2（可选）'
+                            rows={2}
+                            value={change2}
+                            onChange={(event) => setChange2(event.target.value)}
+                            className='border-wb-border bg-wb-panel text-sm'
+                        />
                     </div>
                     <div>
-                        <p className='text-[11px] text-neutral-400'>明确保留项（每行一项）</p>
-                        <Textarea rows={3} value={keep} onChange={(event) => setKeep(event.target.value)} className='border-neutral-700 bg-neutral-900 text-xs' />
+                        <p className='text-wb-muted text-xs'>明确保留项（每行一项）</p>
+                        <Textarea
+                            aria-label='明确保留项'
+                            rows={3}
+                            value={keep}
+                            onChange={(event) => setKeep(event.target.value)}
+                            className='border-wb-border bg-wb-panel text-sm'
+                        />
                     </div>
                     <div className='flex items-center gap-2'>
-                        <span className='text-[11px] text-neutral-400'>预算上限（USD）</span>
-                        <Input type='number' min={0.01} step={0.01} value={budgetUsd} onChange={(event) => setBudgetUsd(Number(event.target.value))} className='h-8 w-28 border-neutral-700 bg-neutral-900 text-xs' />
+                        <span className='text-wb-muted text-xs'>预算上限（USD）</span>
+                        <Input
+                            aria-label='预算上限（USD）'
+                            type='number'
+                            min={0.01}
+                            step={0.01}
+                            value={budgetUsd}
+                            onChange={(event) => setBudgetUsd(Number(event.target.value))}
+                            className='border-wb-border bg-wb-panel h-9 w-28 text-sm'
+                        />
                     </div>
                 </div>
-                {!status.mock && (
-                    <label className='flex items-start gap-2 rounded border border-yellow-700/40 bg-yellow-950/20 p-2 text-[11px] text-yellow-100'>
-                        <input type='checkbox' checked={risk} onChange={(event) => setRisk(event.target.checked)} className='mt-0.5 accent-amber-500' />
-                        <span>我确认本次为 1 次编辑 + 1 次审稿；审稿费用未知，图片费用为估算；失败或未知时不会自动重发。</span>
-                    </label>
-                )}
+                <label className='border-wb-warning bg-wb-subtle text-wb-warning flex items-start gap-2 rounded border p-2 text-xs'>
+                    <input
+                        type='checkbox'
+                        checked={risk}
+                        onChange={(event) => setRisk(event.target.checked)}
+                        className='accent-wb-accent mt-0.5'
+                    />
+                    <span>
+                        我确认本次为 1 次编辑 + 1 次审稿；审稿费用未知，图片费用为估算；失败或未知时不会自动重发。
+                    </span>
+                </label>
                 <DialogFooter>
-                    <Button variant='outline' disabled={busy} onClick={onClose}>取消</Button>
-                    <Button disabled={busy || (!status.mock && !risk)} onClick={() => void submit()}>
+                    <Button variant='outline' disabled={busy} onClick={onClose}>
+                        取消
+                    </Button>
+                    <Button disabled={busy || !risk} onClick={() => void submit()}>
                         {busy ? <Spinner label='提交中' /> : '确认修订'}
                     </Button>
                 </DialogFooter>
@@ -688,7 +742,6 @@ export function RevisionDialog({
 export function RerollDialog({
     onClose,
     detail,
-    status,
     sourceRun,
     onAction,
     notify,
@@ -703,6 +756,7 @@ export function RerollDialog({
     setError: (message: string | null) => void;
 }) {
     const [budgetUsd, setBudgetUsd] = React.useState(1);
+    const [submitError, setSubmitError] = React.useState<string | null>(null);
     const [risk, setRisk] = React.useState(false);
     const [busy, setBusy] = React.useState(false);
     const [actionId] = React.useState(() => newActionId());
@@ -712,6 +766,7 @@ export function RerollDialog({
     async function submit() {
         if (!sourceRun) return;
         setBusy(true);
+        setSubmitError(null);
         setError(null);
         try {
             const response = await onAction('run.create', {
@@ -723,10 +778,16 @@ export function RerollDialog({
                     riskAcknowledged: risk
                 }
             });
-            notify(response?.reused === true ? '相同再抽动作已存在，已返回同一任务。' : '已创建同方案再抽任务；沿用原快照，不调用规划器。');
+            notify(
+                response?.reused === true
+                    ? '相同再抽动作已存在，已返回同一任务。'
+                    : '已创建同方案再抽任务；沿用原快照，不调用规划器。'
+            );
             onClose();
         } catch (error) {
-            setError(error instanceof Error ? error.message : '创建再抽失败。');
+            const message = error instanceof Error ? error.message : '创建再抽失败。';
+            setSubmitError(message);
+            setError(message);
         } finally {
             setBusy(false);
         }
@@ -734,36 +795,74 @@ export function RerollDialog({
 
     return (
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
-            <DialogContent className='max-w-2xl border-neutral-800 bg-neutral-950'>
+            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink sm:max-w-2xl'>
                 <DialogHeader>
                     <DialogTitle>同方案再抽</DialogTitle>
-                    <DialogDescription>复用指定运行的已确认提示词、参考组和参数；不调用规划器改方向，创建新的授权运行。</DialogDescription>
+                    <DialogDescription>
+                        复用指定运行的已确认提示词、参考组和参数；不调用规划器改方向，创建新的授权运行。
+                    </DialogDescription>
                 </DialogHeader>
-                <div className='space-y-1 rounded border border-neutral-800 bg-neutral-900/50 p-2 text-[11px] text-neutral-300'>
-                    <p>来源运行：{sourceRun.id.slice(0, 8)} · {sourceRun.action} · {sourceRun.status}</p>
-                    <p>模型/参数：{sourceRun.snapshot.params.model} · {sourceRun.snapshot.params.size} · {sourceRun.snapshot.params.quality} · {sourceRun.snapshot.params.imageCount} 张</p>
-                    <p>参考顺序：{sourceRun.snapshot.references.length > 0 ? sourceRun.snapshot.references.map((ref) => `${ref.position + 1}.${ref.purpose}`).join(' / ') : '无'}</p>
-                    <p>提示词：{sourceRun.snapshot.prompt.slice(0, 180)}{sourceRun.snapshot.prompt.length > 180 ? '…' : ''}</p>
-                    <p className='text-neutral-500'>再次抽卡会创建新的动作键与新的费用估算；不会改写原方案。</p>
+                {submitError && (
+                    <p role='alert' className='text-wb-error text-sm leading-relaxed'>
+                        {submitError}
+                    </p>
+                )}
+                <div className='border-wb-border bg-wb-subtle text-wb-ink space-y-1 rounded border p-2 text-xs'>
+                    <p>
+                        来源运行：{sourceRun.id.slice(0, 8)} · {sourceRun.action} · {sourceRun.status}
+                    </p>
+                    <p>
+                        模型/参数：{sourceRun.snapshot.params.model} · {sourceRun.snapshot.params.size} ·{' '}
+                        {sourceRun.snapshot.params.quality} · {sourceRun.snapshot.params.imageCount} 张
+                    </p>
+                    <p>
+                        参考顺序：
+                        {sourceRun.snapshot.references.length > 0
+                            ? sourceRun.snapshot.references
+                                  .map((ref) => `${ref.position + 1}.${REFERENCE_PURPOSE_LABELS[ref.purpose]}`)
+                                  .join(' / ')
+                            : '无'}
+                    </p>
+                    <p>
+                        提示词：{sourceRun.snapshot.prompt.slice(0, 180)}
+                        {sourceRun.snapshot.prompt.length > 180 ? '…' : ''}
+                    </p>
+                    <p className='text-wb-muted'>再次抽卡会创建新的动作键与新的费用估算；不会改写原方案。</p>
                     {sourceRun.items.some((item) => item.status === 'unknown') && (
-                        <p className='rounded border border-red-700/50 bg-red-950/30 p-1.5 text-red-200'>
+                        <p className='border-wb-error bg-wb-subtle text-wb-error rounded border p-1.5'>
                             来源运行包含“结果未知”的付费请求。再次提交可能造成上游重复收费，请先核实供应商状态。
                         </p>
                     )}
                 </div>
                 <div className='flex items-center gap-2'>
-                    <span className='text-[11px] text-neutral-400'>预算上限（USD）</span>
-                    <Input type='number' min={0.01} step={0.01} value={budgetUsd} onChange={(event) => setBudgetUsd(Number(event.target.value))} className='h-8 w-28 border-neutral-700 bg-neutral-900 text-xs' />
+                    <span className='text-wb-muted text-xs'>预算上限（USD）</span>
+                    <Input
+                        aria-label='预算上限（USD）'
+                        type='number'
+                        min={0.01}
+                        step={0.01}
+                        value={budgetUsd}
+                        onChange={(event) => setBudgetUsd(Number(event.target.value))}
+                        className='border-wb-border bg-wb-panel h-9 w-28 text-sm'
+                    />
                 </div>
-                {!status.mock && (
-                    <label className='flex items-start gap-2 rounded border border-yellow-700/40 bg-yellow-950/20 p-2 text-[11px] text-yellow-100'>
-                        <input type='checkbox' checked={risk} onChange={(event) => setRisk(event.target.checked)} className='mt-0.5 accent-amber-500' />
-                        <span>我确认为新的授权运行，包含 {sourceRun.snapshot.params.imageCount} 次生图与审稿；费用为估算，审稿费用未知。</span>
-                    </label>
-                )}
+                <label className='border-wb-warning bg-wb-subtle text-wb-warning flex items-start gap-2 rounded border p-2 text-xs'>
+                    <input
+                        type='checkbox'
+                        checked={risk}
+                        onChange={(event) => setRisk(event.target.checked)}
+                        className='accent-wb-accent mt-0.5'
+                    />
+                    <span>
+                        我确认为新的授权运行，包含 {sourceRun.snapshot.params.imageCount}{' '}
+                        次生图与审稿；费用为估算，审稿费用未知。
+                    </span>
+                </label>
                 <DialogFooter>
-                    <Button variant='outline' disabled={busy} onClick={onClose}>取消</Button>
-                    <Button disabled={busy || (!status.mock && !risk)} onClick={() => void submit()}>
+                    <Button variant='outline' disabled={busy} onClick={onClose}>
+                        取消
+                    </Button>
+                    <Button disabled={busy || !risk} onClick={() => void submit()}>
                         {busy ? <Spinner label='提交中' /> : '确认再抽'}
                     </Button>
                 </DialogFooter>
@@ -771,4 +870,3 @@ export function RerollDialog({
         </Dialog>
     );
 }
-

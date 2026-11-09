@@ -1,11 +1,11 @@
 'use client';
 
-import { Badge, Section, useSyncedState, type PanelProps } from '@/components/workbench/shared';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge, Section, useDraftStatus, useSyncedState, type PanelProps } from '@/components/workbench/shared';
 import { uploadProjectFile, workbenchFetch } from '@/lib/workbench/client';
 import type { AssetMeta, ReferencePurpose } from '@/lib/workbench/types';
 import { REFERENCE_PURPOSE_LABELS, REFERENCE_PURPOSES } from '@/lib/workbench/types';
@@ -24,7 +24,7 @@ function assetsSignature(detail: PanelProps['detail']) {
         .join('|');
 }
 
-export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, refresh }: PanelProps) {
+export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, refresh, setError }: PanelProps) {
     const [draft, setDraft] = useSyncedState<DraftBinding[]>(
         detail.references.map((binding) => ({
             assetId: binding.assetId,
@@ -37,7 +37,12 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
     const [localBusy, setLocalBusy] = React.useState(false);
     const [libraryOpen, setLibraryOpen] = React.useState(false);
     const [library, setLibrary] = React.useState<AssetMeta[]>([]);
+    const [libraryError, setLibraryError] = React.useState<string | null>(null);
+    const [libraryLoading, setLibraryLoading] = React.useState(false);
     const [expanded, setExpanded] = React.useState<string | null>(null);
+    const [selectedAssetId, setSelectedAssetId] = React.useState<string | null>(null);
+    const [analysisFailures, setAnalysisFailures] = React.useState<Record<string, string>>({});
+    const [externalBindingChange, setExternalBindingChange] = React.useState(false);
     const [analysisDraft, setAnalysisDraft] = React.useState<{
         assetId: string;
         observable: string;
@@ -46,9 +51,46 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
         styleLanguage: string;
     } | null>(null);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
+    const savedBindings = detail.references.map(({ assetId, purpose, borrow, exclude }) => ({
+        assetId,
+        purpose,
+        borrow,
+        exclude
+    }));
+    const dirty = JSON.stringify(draft) !== JSON.stringify(savedBindings);
+    const savedSignature = JSON.stringify(savedBindings);
+    const previousSavedBindings = React.useRef(savedBindings);
+    React.useEffect(() => {
+        const previous = previousSavedBindings.current;
+        if (JSON.stringify(previous) === savedSignature) return;
+        const next = JSON.parse(savedSignature) as DraftBinding[];
+        previousSavedBindings.current = next;
+        const added = next.filter((item) => !previous.some((old) => old.assetId === item.assetId));
+        // A search import can append a saved reference while this panel holds a
+        // different draft. Preserve local edits/removals and include new assets.
+        setDraft((current) => {
+            if (JSON.stringify(current) === JSON.stringify(previous) || JSON.stringify(current) === savedSignature)
+                return next;
+            return [...current, ...added.filter((item) => !current.some((entry) => entry.assetId === item.assetId))];
+        });
+        if (JSON.stringify(draft) !== JSON.stringify(previous) && JSON.stringify(draft) !== savedSignature) {
+            queueMicrotask(() => setExternalBindingChange(true));
+        }
+    }, [savedSignature, setDraft, draft]);
+    const editingAnalysis = detail.assets.find((asset) => asset.id === analysisDraft?.assetId)?.analysis;
+    const analysisDirty =
+        !!analysisDraft &&
+        !!editingAnalysis &&
+        (analysisDraft.observable !== editingAnalysis.observable.join('\n') ||
+            analysisDraft.inferences !== editingAnalysis.inferences.join('\n') ||
+            analysisDraft.uncertainties !== editingAnalysis.uncertainties.join('\n') ||
+            analysisDraft.styleLanguage !== editingAnalysis.styleLanguage);
+    useDraftStatus(`references:${detail.project.id}`, dirty || analysisDirty);
 
     const boundIds = new Set(draft.map((item) => item.assetId));
-    const projectAssets = detail.assets.filter((asset) => asset.kind !== 'generated');
+    // Uploads reuse an existing asset by hash, including a saved generated image.
+    // Keep that image selectable instead of reporting upload success then hiding it.
+    const projectAssets = detail.assets;
 
     async function handleUpload(file: File) {
         setLocalBusy(true);
@@ -81,10 +123,24 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
     async function saveBindings() {
         setLocalBusy(true);
         try {
-            await onAction('references.save', {
+            const response = await onAction('references.save', {
                 bindings: draft.map((item, index) => ({ ...item, position: index }))
             });
+            const saved = (response?.project as PanelProps['detail'] | undefined)?.references;
+            if (saved) {
+                const next = saved.map(({ assetId, purpose, borrow, exclude }) => ({
+                    assetId,
+                    purpose,
+                    borrow,
+                    exclude
+                }));
+                previousSavedBindings.current = next;
+                setDraft(next);
+            }
+            setExternalBindingChange(false);
             notify('参考组已保存；提示词会标记为过期，请确认保留手动版或重新编译。');
+        } catch (error) {
+            setError(error instanceof Error ? error.message : '参考组保存失败。');
         } finally {
             setLocalBusy(false);
         }
@@ -97,19 +153,36 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
             lines: ['视觉模型调用：1 次', '费用：未知（视觉模型价格未配置）', '不会生图、不会搜索'],
             confirmLabel: '确认分析（1 次视觉调用）',
             onConfirm: async () => {
-                await onAction('assets.analyze', { assetId: asset.id, confirmAnalysis: true });
-                notify('参考图分析已更新。');
+                try {
+                    await onAction('assets.analyze', { assetId: asset.id, confirmAnalysis: true });
+                    setAnalysisFailures((current) => {
+                        const next = { ...current };
+                        delete next[asset.id];
+                        return next;
+                    });
+                    notify('参考图分析已更新。');
+                } catch (error) {
+                    setAnalysisFailures((current) => ({
+                        ...current,
+                        [asset.id]: error instanceof Error ? error.message : '分析失败。'
+                    }));
+                    throw error;
+                }
             }
         });
     }
 
     async function openLibrary() {
         setLibraryOpen(true);
+        setLibraryError(null);
+        setLibraryLoading(true);
         try {
             const response = await workbenchFetch<{ assets: AssetMeta[] }>('/api/workbench/library');
             setLibrary(response.assets.filter((asset) => asset.kind !== 'generated'));
         } catch (error) {
-            notify(error instanceof Error ? error.message : '读取素材库失败。');
+            setLibraryError(error instanceof Error ? error.message : '读取素材库失败。');
+        } finally {
+            setLibraryLoading(false);
         }
     }
 
@@ -119,7 +192,8 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
                 title='参考图组'
                 description={`${draft.length} 张 · 顺序和用途会写入确认快照，并实际传给生图与审稿`}
                 actions={
-                    <div className='flex gap-1.5'>
+                    <div className='flex flex-wrap items-center gap-1.5'>
+                        <Badge tone={dirty ? 'yellow' : 'green'}>{dirty ? '参考组未保存' : '已保存'}</Badge>
                         <Button size='sm' variant='outline' onClick={() => void openLibrary()}>
                             从已有素材选用
                         </Button>
@@ -139,205 +213,393 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
                     }}
                 />
 
+                {externalBindingChange && (
+                    <p
+                        role='status'
+                        className='border-wb-warning bg-wb-warning-soft text-wb-warning rounded border p-2 text-[13px]'>
+                        已保存参考组在其他操作中发生变化。当前借用说明与排序草稿已保留，新增参考已合并；请核对后保存。
+                    </p>
+                )}
+
                 {draft.length === 0 && (
-                    <p className='rounded border border-neutral-800 bg-neutral-950/40 p-2 text-[11px] text-neutral-500'>
+                    <p className='border-wb-border bg-wb-panel text-wb-muted rounded border p-2 text-[13px]'>
                         还没有参考图。上传官图、场景或姿态参考后，设置“借用/不借用”并保存。
                     </p>
                 )}
 
                 <ul className='space-y-2'>
                     {draft.map((binding, index) => {
-                        const asset = detail.assets.find((item) => item.id === binding.assetId);
+                        const asset =
+                            detail.assets.find((item) => item.id === binding.assetId) ??
+                            library.find((item) => item.id === binding.assetId);
                         if (!asset) return null;
                         return (
-                            <li key={binding.assetId} className='rounded border border-neutral-800 bg-neutral-950/40 p-2'>
+                            <li
+                                key={binding.assetId}
+                                className={`rounded border p-2 ${selectedAssetId === asset.id ? 'border-wb-accent bg-wb-accent-soft' : 'border-wb-border bg-wb-panel'}`}>
                                 <div className='flex items-start gap-2'>
                                     <img
                                         src={`/api/workbench/assets/${asset.id}/file`}
                                         alt={asset.originalName}
-                                        className='size-14 shrink-0 rounded border border-neutral-800 object-cover'
+                                        className='border-wb-border size-14 shrink-0 rounded border object-cover'
                                     />
                                     <div className='min-w-0 flex-1 space-y-1'>
-                                        <div className='flex items-center justify-between gap-1'>
-                                            <span className='truncate text-[11px] font-medium text-neutral-200'>
+                                        <div className='flex flex-wrap items-center justify-between gap-1'>
+                                            <button
+                                                type='button'
+                                                className='text-wb-ink decoration-wb-border max-w-full min-w-0 truncate text-left text-[13px] font-medium underline underline-offset-4'
+                                                title={asset.originalName}
+                                                aria-expanded={selectedAssetId === asset.id}
+                                                onClick={() =>
+                                                    setSelectedAssetId(selectedAssetId === asset.id ? null : asset.id)
+                                                }>
                                                 {index + 1}. {asset.originalName}
-                                            </span>
+                                            </button>
                                             <div className='flex gap-1'>
-                                                <Button size='sm' variant='outline' className='h-6 px-1 text-[10px]' onClick={() => move(index, -1)}>
+                                                <Button
+                                                    size='sm'
+                                                    variant='outline'
+                                                    className='h-9 min-w-9 px-1 text-xs'
+                                                    aria-label={`上移参考图${index + 1}`}
+                                                    title='上移参考图'
+                                                    disabled={busy || localBusy || index === 0}
+                                                    onClick={() => move(index, -1)}>
                                                     ↑
                                                 </Button>
-                                                <Button size='sm' variant='outline' className='h-6 px-1 text-[10px]' onClick={() => move(index, 1)}>
+                                                <Button
+                                                    size='sm'
+                                                    variant='outline'
+                                                    className='h-9 min-w-9 px-1 text-xs'
+                                                    aria-label={`下移参考图${index + 1}`}
+                                                    title='下移参考图'
+                                                    disabled={busy || localBusy || index === draft.length - 1}
+                                                    onClick={() => move(index, 1)}>
                                                     ↓
                                                 </Button>
                                                 <Button
                                                     size='sm'
                                                     variant='outline'
-                                                    className='h-6 px-1 text-[10px]'
-                                                    onClick={() => setDraft((current) => current.filter((item) => item.assetId !== binding.assetId))}>
+                                                    className='h-9 px-1 text-xs'
+                                                    disabled={busy || localBusy}
+                                                    onClick={() =>
+                                                        setDraft((current) =>
+                                                            current.filter((item) => item.assetId !== binding.assetId)
+                                                        )
+                                                    }>
                                                     移除
                                                 </Button>
                                             </div>
                                         </div>
                                         <div className='flex flex-wrap items-center gap-1'>
-                                            <Badge>{asset.width}×{asset.height}</Badge>
-                                            <Badge tone={asset.mock ? 'purple' : 'neutral'}>{asset.kind}</Badge>
-                                            {asset.analysis ? <Badge tone='green'>已分析</Badge> : <Badge tone='yellow'>未分析</Badge>}
-                                            <Select
-                                                value={binding.purpose}
-                                                onValueChange={(value) =>
-                                                    setDraft((current) =>
-                                                        current.map((item, itemIndex) =>
-                                                            itemIndex === index ? { ...item, purpose: value as ReferencePurpose } : item
-                                                        )
-                                                    )
-                                                }>
-                                                <SelectTrigger className='h-7 w-[150px] border-neutral-700 bg-neutral-950 text-[11px]'>
-                                                    <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {REFERENCE_PURPOSES.map((purpose) => (
-                                                        <SelectItem key={purpose} value={purpose}>
-                                                            {REFERENCE_PURPOSE_LABELS[purpose]}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                        <div className='grid gap-1 md:grid-cols-2'>
-                                            <Input
-                                                placeholder='借用点（如：服装结构、耳朵轮廓）'
-                                                value={binding.borrow}
-                                                onChange={(event) =>
-                                                    setDraft((current) =>
-                                                        current.map((item, itemIndex) =>
-                                                            itemIndex === index ? { ...item, borrow: event.target.value } : item
-                                                        )
-                                                    )
-                                                }
-                                                className='h-7 border-neutral-700 bg-neutral-950/60 text-[11px]'
-                                            />
-                                            <Input
-                                                placeholder='不借用点（如：站姿、面孔）'
-                                                value={binding.exclude}
-                                                onChange={(event) =>
-                                                    setDraft((current) =>
-                                                        current.map((item, itemIndex) =>
-                                                            itemIndex === index ? { ...item, exclude: event.target.value } : item
-                                                        )
-                                                    )
-                                                }
-                                                className='h-7 border-neutral-700 bg-neutral-950/60 text-[11px]'
-                                            />
-                                        </div>
-                                        <div className='flex items-center gap-2'>
-                                            <Button size='sm' variant='outline' className='h-6 px-2 text-[10px]' disabled={busy || localBusy} onClick={() => analyze(asset)}>
-                                                分析图片
-                                            </Button>
-                                            {asset.analysis && (
-                                                <button
-                                                    type='button'
-                                                    className='text-[10px] text-neutral-400 underline'
-                                                    onClick={() => setExpanded(expanded === asset.id ? null : asset.id)}>
-                                                    {expanded === asset.id ? '收起分析' : '查看分析'}
-                                                </button>
+                                            <Badge>
+                                                {asset.width}×{asset.height}
+                                            </Badge>
+                                            <Badge>{asset.kind}</Badge>
+                                            {analysisFailures[asset.id] ? (
+                                                <Badge tone='red'>分析失败</Badge>
+                                            ) : asset.analysis ? (
+                                                <Badge tone='green'>已分析</Badge>
+                                            ) : (
+                                                <Badge tone='yellow'>未分析</Badge>
                                             )}
+                                            <Badge>{REFERENCE_PURPOSE_LABELS[binding.purpose]}</Badge>
                                         </div>
-                                        {expanded === asset.id && asset.analysis && (
-                                            <div className='space-y-1 rounded border border-neutral-800 bg-neutral-900/60 p-2 text-[10px] text-neutral-400'>
-                                                {analysisDraft?.assetId === asset.id ? (
-                                                    <div className='space-y-1'>
-                                                        <Textarea
-                                                            rows={3}
-                                                            value={analysisDraft.observable}
+                                        <p className='text-wb-muted line-clamp-2 text-xs'>
+                                            借用：{binding.borrow || '尚未填写'}
+                                        </p>
+                                        <button
+                                            type='button'
+                                            className='text-wb-accent min-h-9 text-xs underline'
+                                            aria-expanded={selectedAssetId === asset.id}
+                                            onClick={() =>
+                                                setSelectedAssetId(selectedAssetId === asset.id ? null : asset.id)
+                                            }>
+                                            {selectedAssetId === asset.id ? '收起参考详情' : '编辑用途与借用说明'}
+                                        </button>
+                                        {selectedAssetId === asset.id && (
+                                            <div className='border-wb-border space-y-2 border-t pt-2'>
+                                                <label className='text-wb-muted block text-xs'>参考用途</label>
+                                                <Select
+                                                    disabled={busy || localBusy}
+                                                    value={binding.purpose}
+                                                    onValueChange={(value) =>
+                                                        setDraft((current) =>
+                                                            current.map((item, itemIndex) =>
+                                                                itemIndex === index
+                                                                    ? { ...item, purpose: value as ReferencePurpose }
+                                                                    : item
+                                                            )
+                                                        )
+                                                    }>
+                                                    <SelectTrigger
+                                                        aria-label={`参考图${index + 1}用途`}
+                                                        className='border-wb-border bg-wb-panel h-9 w-full text-sm'>
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {REFERENCE_PURPOSES.map((purpose) => (
+                                                            <SelectItem key={purpose} value={purpose}>
+                                                                {REFERENCE_PURPOSE_LABELS[purpose]}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                <div className='grid gap-2'>
+                                                    <label className='text-wb-muted text-xs'>
+                                                        借用说明
+                                                        <Input
+                                                            disabled={busy || localBusy}
+                                                            maxLength={500}
+                                                            aria-label={`参考图${index + 1}借用说明`}
+                                                            placeholder='借用点（如：服装结构、耳朵轮廓）'
+                                                            value={binding.borrow}
                                                             onChange={(event) =>
-                                                                setAnalysisDraft({ ...analysisDraft, observable: event.target.value })
+                                                                setDraft((current) =>
+                                                                    current.map((item, itemIndex) =>
+                                                                        itemIndex === index
+                                                                            ? { ...item, borrow: event.target.value }
+                                                                            : item
+                                                                    )
+                                                                )
                                                             }
-                                                            className='border-neutral-700 bg-neutral-950 text-[10px]'
-                                                            placeholder='可观察特征（每行一项）'
+                                                            className='border-wb-border bg-wb-panel h-9 text-sm'
                                                         />
-                                                        <Textarea
-                                                            rows={2}
-                                                            value={analysisDraft.inferences}
+                                                    </label>
+                                                    <label className='text-wb-muted text-xs'>
+                                                        不借用的部分
+                                                        <Input
+                                                            disabled={busy || localBusy}
+                                                            maxLength={500}
+                                                            aria-label={`参考图${index + 1}排除说明`}
+                                                            placeholder='不借用点（如：站姿、面孔）'
+                                                            value={binding.exclude}
                                                             onChange={(event) =>
-                                                                setAnalysisDraft({ ...analysisDraft, inferences: event.target.value })
+                                                                setDraft((current) =>
+                                                                    current.map((item, itemIndex) =>
+                                                                        itemIndex === index
+                                                                            ? { ...item, exclude: event.target.value }
+                                                                            : item
+                                                                    )
+                                                                )
                                                             }
-                                                            className='border-neutral-700 bg-neutral-950 text-[10px]'
-                                                            placeholder='推测（每行一项）'
+                                                            className='border-wb-border bg-wb-panel h-9 text-sm'
                                                         />
-                                                        <Textarea
-                                                            rows={2}
-                                                            value={analysisDraft.uncertainties}
-                                                            onChange={(event) =>
-                                                                setAnalysisDraft({ ...analysisDraft, uncertainties: event.target.value })
-                                                            }
-                                                            className='border-neutral-700 bg-neutral-950 text-[10px]'
-                                                            placeholder='不确定（每行一项）'
-                                                        />
-                                                        <Textarea
-                                                            rows={2}
-                                                            value={analysisDraft.styleLanguage}
-                                                            onChange={(event) =>
-                                                                setAnalysisDraft({ ...analysisDraft, styleLanguage: event.target.value })
-                                                            }
-                                                            className='border-neutral-700 bg-neutral-950 text-[10px]'
-                                                            placeholder='绘画语言'
-                                                        />
-                                                        <div className='flex gap-1'>
-                                                            <Button
-                                                                size='sm'
-                                                                className='h-6 px-2 text-[10px]'
-                                                                disabled={busy || localBusy}
-                                                                onClick={() => {
-                                                                    void (async () => {
-                                                                        setLocalBusy(true);
-                                                                        try {
-                                                                            await onAction('assets.updateAnalysis', {
-                                                                                assetId: asset.id,
-                                                                                analysis: {
-                                                                                    observable: analysisDraft.observable.split('\n').map((item) => item.trim()).filter(Boolean),
-                                                                                    inferences: analysisDraft.inferences.split('\n').map((item) => item.trim()).filter(Boolean),
-                                                                                    uncertainties: analysisDraft.uncertainties.split('\n').map((item) => item.trim()).filter(Boolean),
-                                                                                    styleLanguage: analysisDraft.styleLanguage,
-                                                                                    suggestedPurpose: asset.analysis?.suggestedPurpose ?? 'style'
-                                                                                }
-                                                                            });
-                                                                            setAnalysisDraft(null);
-                                                                            notify('分析结果已手动修改并保存（优先于模型缓存）。');
-                                                                        } finally {
-                                                                            setLocalBusy(false);
-                                                                        }
-                                                                    })();
-                                                                }}>
-                                                                保存分析修改
-                                                            </Button>
-                                                            <Button size='sm' variant='outline' className='h-6 px-2 text-[10px]' onClick={() => setAnalysisDraft(null)}>
-                                                                取消
-                                                            </Button>
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <>
-                                                        <p><span className='text-neutral-200'>可观察：</span>{asset.analysis.observable.join('；')}</p>
-                                                        <p><span className='text-neutral-200'>推测：</span>{asset.analysis.inferences.join('；')}</p>
-                                                        <p><span className='text-neutral-200'>不确定：</span>{asset.analysis.uncertainties.join('；')}</p>
-                                                        <p><span className='text-neutral-200'>绘画语言：</span>{asset.analysis.styleLanguage}</p>
-                                                        <p className='text-neutral-500'>{asset.analysis.model === 'mock-analysis' ? 'Mock 分析，非同真实看图。' : `模型：${asset.analysis.model}`}</p>
-                                                        <Button
-                                                            size='sm'
-                                                            variant='outline'
-                                                            className='h-6 px-2 text-[10px]'
+                                                    </label>
+                                                </div>
+                                                {analysisFailures[asset.id] && (
+                                                    <p role='alert' className='text-wb-error text-xs'>
+                                                        分析失败：{analysisFailures[asset.id]}
+                                                        。上传完成不代表图片已经被模型理解。
+                                                    </p>
+                                                )}
+                                                <div className='flex items-center gap-2'>
+                                                    <Button
+                                                        size='sm'
+                                                        variant='outline'
+                                                        className='h-9 px-2 text-xs'
+                                                        disabled={busy || localBusy}
+                                                        onClick={() => analyze(asset)}>
+                                                        分析图片
+                                                    </Button>
+                                                    {asset.analysis && (
+                                                        <button
+                                                            type='button'
+                                                            className='text-wb-muted text-xs underline'
                                                             onClick={() =>
-                                                                setAnalysisDraft({
-                                                                    assetId: asset.id,
-                                                                    observable: asset.analysis!.observable.join('\n'),
-                                                                    inferences: asset.analysis!.inferences.join('\n'),
-                                                                    uncertainties: asset.analysis!.uncertainties.join('\n'),
-                                                                    styleLanguage: asset.analysis!.styleLanguage
-                                                                })
+                                                                setExpanded(expanded === asset.id ? null : asset.id)
                                                             }>
-                                                            编辑分析
-                                                        </Button>
-                                                    </>
+                                                            {expanded === asset.id ? '收起分析' : '查看分析'}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {expanded === asset.id && asset.analysis && (
+                                                    <div className='border-wb-border bg-wb-panel text-wb-muted space-y-1 rounded border p-2 text-xs'>
+                                                        {analysisDraft?.assetId === asset.id ? (
+                                                            <div className='space-y-1'>
+                                                                <Textarea
+                                                                    disabled={busy || localBusy}
+                                                                    aria-label='分析的可观察特征'
+                                                                    rows={3}
+                                                                    value={analysisDraft.observable}
+                                                                    onChange={(event) =>
+                                                                        setAnalysisDraft({
+                                                                            ...analysisDraft,
+                                                                            observable: event.target.value
+                                                                        })
+                                                                    }
+                                                                    className='border-wb-border bg-wb-panel text-sm leading-relaxed'
+                                                                    placeholder='可观察特征（每行一项）'
+                                                                />
+                                                                <Textarea
+                                                                    disabled={busy || localBusy}
+                                                                    aria-label='分析的推测'
+                                                                    rows={2}
+                                                                    value={analysisDraft.inferences}
+                                                                    onChange={(event) =>
+                                                                        setAnalysisDraft({
+                                                                            ...analysisDraft,
+                                                                            inferences: event.target.value
+                                                                        })
+                                                                    }
+                                                                    className='border-wb-border bg-wb-panel text-sm leading-relaxed'
+                                                                    placeholder='推测（每行一项）'
+                                                                />
+                                                                <Textarea
+                                                                    disabled={busy || localBusy}
+                                                                    aria-label='分析的不确定项'
+                                                                    rows={2}
+                                                                    value={analysisDraft.uncertainties}
+                                                                    onChange={(event) =>
+                                                                        setAnalysisDraft({
+                                                                            ...analysisDraft,
+                                                                            uncertainties: event.target.value
+                                                                        })
+                                                                    }
+                                                                    className='border-wb-border bg-wb-panel text-sm leading-relaxed'
+                                                                    placeholder='不确定（每行一项）'
+                                                                />
+                                                                <Textarea
+                                                                    disabled={busy || localBusy}
+                                                                    aria-label='分析的绘画语言'
+                                                                    rows={2}
+                                                                    value={analysisDraft.styleLanguage}
+                                                                    onChange={(event) =>
+                                                                        setAnalysisDraft({
+                                                                            ...analysisDraft,
+                                                                            styleLanguage: event.target.value
+                                                                        })
+                                                                    }
+                                                                    className='border-wb-border bg-wb-panel text-sm leading-relaxed'
+                                                                    placeholder='绘画语言'
+                                                                />
+                                                                <div className='flex gap-1'>
+                                                                    <Button
+                                                                        size='sm'
+                                                                        className='h-9 px-2 text-xs'
+                                                                        disabled={busy || localBusy}
+                                                                        onClick={() => {
+                                                                            void (async () => {
+                                                                                setLocalBusy(true);
+                                                                                try {
+                                                                                    await onAction(
+                                                                                        'assets.updateAnalysis',
+                                                                                        {
+                                                                                            assetId: asset.id,
+                                                                                            analysis: {
+                                                                                                observable:
+                                                                                                    analysisDraft.observable
+                                                                                                        .split('\n')
+                                                                                                        .map((item) =>
+                                                                                                            item.trim()
+                                                                                                        )
+                                                                                                        .filter(
+                                                                                                            Boolean
+                                                                                                        ),
+                                                                                                inferences:
+                                                                                                    analysisDraft.inferences
+                                                                                                        .split('\n')
+                                                                                                        .map((item) =>
+                                                                                                            item.trim()
+                                                                                                        )
+                                                                                                        .filter(
+                                                                                                            Boolean
+                                                                                                        ),
+                                                                                                uncertainties:
+                                                                                                    analysisDraft.uncertainties
+                                                                                                        .split('\n')
+                                                                                                        .map((item) =>
+                                                                                                            item.trim()
+                                                                                                        )
+                                                                                                        .filter(
+                                                                                                            Boolean
+                                                                                                        ),
+                                                                                                styleLanguage:
+                                                                                                    analysisDraft.styleLanguage,
+                                                                                                suggestedPurpose:
+                                                                                                    asset.analysis
+                                                                                                        ?.suggestedPurpose ??
+                                                                                                    'style'
+                                                                                            }
+                                                                                        }
+                                                                                    );
+                                                                                    setAnalysisDraft(null);
+                                                                                    notify(
+                                                                                        '分析结果已手动修改并保存（优先于模型缓存）。'
+                                                                                    );
+                                                                                } catch (error) {
+                                                                                    setError(
+                                                                                        error instanceof Error
+                                                                                            ? error.message
+                                                                                            : '分析修改保存失败。'
+                                                                                    );
+                                                                                } finally {
+                                                                                    setLocalBusy(false);
+                                                                                }
+                                                                            })();
+                                                                        }}>
+                                                                        保存分析修改
+                                                                    </Button>
+                                                                    <Button
+                                                                        size='sm'
+                                                                        variant='outline'
+                                                                        className='h-9 px-2 text-xs'
+                                                                        onClick={() => setAnalysisDraft(null)}>
+                                                                        取消
+                                                                    </Button>
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <>
+                                                                <p>
+                                                                    <span className='text-wb-ink'>可观察：</span>
+                                                                    {asset.analysis.observable.join('；')}
+                                                                </p>
+                                                                <p>
+                                                                    <span className='text-wb-ink'>推测：</span>
+                                                                    {asset.analysis.inferences.join('；')}
+                                                                </p>
+                                                                <p>
+                                                                    <span className='text-wb-ink'>不确定：</span>
+                                                                    {asset.analysis.uncertainties.join('；')}
+                                                                </p>
+                                                                <p>
+                                                                    <span className='text-wb-ink'>绘画语言：</span>
+                                                                    {asset.analysis.styleLanguage}
+                                                                </p>
+                                                                <p className='text-wb-muted'>
+                                                                    模型：{asset.analysis.model}
+                                                                </p>
+                                                                <Button
+                                                                    size='sm'
+                                                                    variant='outline'
+                                                                    className='h-9 px-2 text-xs'
+                                                                    onClick={() => {
+                                                                        if (
+                                                                            analysisDirty &&
+                                                                            analysisDraft?.assetId !== asset.id &&
+                                                                            !window.confirm(
+                                                                                '另一张参考图的分析修改尚未保存。放弃该修改并编辑当前图片？'
+                                                                            )
+                                                                        )
+                                                                            return;
+                                                                        setAnalysisDraft({
+                                                                            assetId: asset.id,
+                                                                            observable:
+                                                                                asset.analysis!.observable.join('\n'),
+                                                                            inferences:
+                                                                                asset.analysis!.inferences.join('\n'),
+                                                                            uncertainties:
+                                                                                asset.analysis!.uncertainties.join(
+                                                                                    '\n'
+                                                                                ),
+                                                                            styleLanguage: asset.analysis!.styleLanguage
+                                                                        });
+                                                                    }}>
+                                                                    编辑分析
+                                                                </Button>
+                                                            </>
+                                                        )}
+                                                    </div>
                                                 )}
                                             </div>
                                         )}
@@ -349,15 +611,15 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
                 </ul>
 
                 <div className='flex justify-end'>
-                    <Button size='sm' disabled={busy || localBusy || draft.length === 0} onClick={() => void saveBindings()}>
+                    <Button size='sm' disabled={busy || localBusy || !dirty} onClick={() => void saveBindings()}>
                         保存参考组（免费）
                     </Button>
                 </div>
             </Section>
 
-            <Section title='项目素材' description='上传或导入的素材；可复用，不必重复上传。'>
+            <Section title='项目素材' description='项目原图与已有作品；按实际用途加入参考，不会自动分析。'>
                 {projectAssets.length === 0 ? (
-                    <p className='text-[11px] text-neutral-500'>暂无素材。</p>
+                    <p className='text-wb-muted text-[13px]'>暂无素材。</p>
                 ) : (
                     <ul className='space-y-1.5'>
                         {projectAssets.map((asset) => (
@@ -365,14 +627,23 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
                                 <img
                                     src={`/api/workbench/assets/${asset.id}/file`}
                                     alt={asset.originalName}
-                                    className='size-8 rounded border border-neutral-800 object-cover'
+                                    className='border-wb-border size-8 rounded border object-cover'
                                 />
-                                <span className='min-w-0 flex-1 truncate text-[11px] text-neutral-300'>{asset.originalName}</span>
-                                <span className='text-[10px] text-neutral-500'>{asset.width}×{asset.height}</span>
+                                <span className='text-wb-ink min-w-0 flex-1 truncate text-[13px]'>
+                                    {asset.originalName}
+                                </span>
+                                <span className='text-wb-muted text-xs'>
+                                    {asset.width}×{asset.height}
+                                </span>
                                 {boundIds.has(asset.id) ? (
                                     <Badge tone='green'>已加入</Badge>
                                 ) : (
-                                    <Button size='sm' variant='outline' className='h-6 px-2 text-[10px]' onClick={() => addAsset(asset)}>
+                                    <Button
+                                        size='sm'
+                                        variant='outline'
+                                        className='h-9 px-2 text-xs'
+                                        disabled={busy || localBusy}
+                                        onClick={() => addAsset(asset)}>
                                         加入参考组
                                     </Button>
                                 )}
@@ -383,35 +654,49 @@ export function ReferencePanel({ detail, busy, onAction, requestPaid, notify, re
             </Section>
 
             <Dialog open={libraryOpen} onOpenChange={setLibraryOpen}>
-                <DialogContent className='max-h-[80vh] max-w-3xl overflow-y-auto border-neutral-800 bg-neutral-950'>
+                <DialogContent className='border-wb-border bg-wb-panel max-h-[80vh] max-w-3xl overflow-y-auto'>
                     <DialogHeader>
                         <DialogTitle>从已有素材选用</DialogTitle>
                         <DialogDescription>跨项目复用同一原图资产；每个项目可绑定不同用途。</DialogDescription>
                     </DialogHeader>
                     <div className='grid gap-2 sm:grid-cols-2'>
                         {library.map((asset) => (
-                            <div key={asset.id} className='flex items-center gap-2 rounded border border-neutral-800 p-2'>
+                            <div key={asset.id} className='border-wb-border flex items-center gap-2 rounded border p-2'>
                                 <img
                                     src={`/api/workbench/assets/${asset.id}/file`}
                                     alt={asset.originalName}
-                                    className='size-12 rounded border border-neutral-800 object-cover'
+                                    className='border-wb-border size-12 rounded border object-cover'
                                 />
                                 <div className='min-w-0 flex-1'>
-                                    <p className='truncate text-[11px] text-neutral-200'>{asset.originalName}</p>
-                                    <p className='text-[10px] text-neutral-500'>{asset.width}×{asset.height} · {asset.sha256.slice(0, 10)}</p>
+                                    <p className='text-wb-ink truncate text-[13px]'>{asset.originalName}</p>
+                                    <p className='text-wb-muted text-xs'>
+                                        {asset.width}×{asset.height} · {asset.sha256.slice(0, 10)}
+                                    </p>
                                 </div>
                                 <Button
                                     size='sm'
                                     variant='outline'
-                                    className='h-7 text-[10px]'
-                                    disabled={boundIds.has(asset.id)}
+                                    className='h-9 text-xs'
+                                    disabled={busy || localBusy || boundIds.has(asset.id)}
                                     onClick={() => addAsset(asset)}>
                                     {boundIds.has(asset.id) ? '已加入' : '选用'}
                                 </Button>
                             </div>
                         ))}
                     </div>
-                    {library.length === 0 && <p className='text-xs text-neutral-500'>素材库为空。</p>}
+                    {libraryLoading && (
+                        <p role='status' className='text-wb-muted text-sm'>
+                            正在读取素材库…
+                        </p>
+                    )}
+                    {libraryError && (
+                        <p role='alert' className='text-wb-error text-sm'>
+                            {libraryError}
+                        </p>
+                    )}
+                    {!libraryLoading && !libraryError && library.length === 0 && (
+                        <p className='text-wb-muted text-sm'>素材库为空。</p>
+                    )}
                 </DialogContent>
             </Dialog>
         </div>

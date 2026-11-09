@@ -88,17 +88,15 @@ function HistoryPanelImpl({
     const [isTotalCostDialogOpen, setIsTotalCostDialogOpen] = React.useState(false);
     const [copiedTimestamp, setCopiedTimestamp] = React.useState<number | null>(null);
 
-    const { totalCost, totalImages, pricedImages, mockImages } = React.useMemo(() => {
+    const visibleHistory = React.useMemo(() => history.filter((item) => item.isMock !== true), [history]);
+    const hasRetainedTestHistory = visibleHistory.length !== history.length;
+
+    const { totalCost, totalImages, pricedImages } = React.useMemo(() => {
         let cost = 0;
         let images = 0;
         let priced = 0;
-        let mocks = 0;
-        history.forEach((item) => {
+        visibleHistory.forEach((item) => {
             const itemImages = item.images?.length ?? 0;
-            if (item.isMock) {
-                mocks += itemImages;
-                return;
-            }
             images += itemImages;
             if (item.costDetails) {
                 cost += item.costDetails.estimated_cost_usd;
@@ -109,10 +107,9 @@ function HistoryPanelImpl({
         return {
             totalCost: Math.round(cost * 10000) / 10000,
             totalImages: images,
-            pricedImages: priced,
-            mockImages: mocks
+            pricedImages: priced
         };
-    }, [history]);
+    }, [visibleHistory]);
 
     const averageCost = pricedImages > 0 ? totalCost / pricedImages : 0;
     const unpricedImages = totalImages - pricedImages;
@@ -180,12 +177,6 @@ function HistoryPanelImpl({
                                             <span>{unpricedImages.toLocaleString()}</span>
                                         </div>
                                     )}
-                                    {mockImages > 0 && (
-                                        <div className='flex justify-between text-purple-300/90'>
-                                            <span>MOCK Images Excluded:</span>{' '}
-                                            <span>{mockImages.toLocaleString()}</span>
-                                        </div>
-                                    )}
                                     <hr className='my-2 border-neutral-700' />
                                     <div className='flex justify-between font-medium text-white'>
                                         <span>Total Estimated Cost:</span>
@@ -207,7 +198,7 @@ function HistoryPanelImpl({
                         </Dialog>
                     )}
                 </div>
-                {history.length > 0 && (
+                {visibleHistory.length > 0 && (
                     <Button
                         variant='ghost'
                         size='sm'
@@ -218,13 +209,18 @@ function HistoryPanelImpl({
                 )}
             </CardHeader>
             <CardContent className='flex-grow overflow-y-auto p-4'>
-                {history.length === 0 ? (
+                {hasRetainedTestHistory && (
+                    <p className='mb-3 text-xs text-neutral-400'>
+                        历史测试记录已保留在本地，但不参与创作列表或费用统计。
+                    </p>
+                )}
+                {visibleHistory.length === 0 ? (
                     <div className='flex h-full items-center justify-center text-white/40'>
                         <p>Generated images will appear here.</p>
                     </div>
                 ) : (
                     <div className='grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5'>
-                        {[...history].map((item) => {
+                        {visibleHistory.map((item) => {
                             const firstImage = item.images?.[0];
                             const imageCount = item.images?.length ?? 0;
                             const isMultiImage = imageCount > 1;
@@ -503,9 +499,6 @@ function HistoryPanelImpl({
                                                 ? `~$${item.costDetails.estimated_cost_usd.toFixed(4)}（根据 usage 估算）`
                                                 : '未知'}
                                         </p>
-                                        {item.isMock && (
-                                            <p className='text-purple-300'>MOCK 测试数据（未调用真实 API）</p>
-                                        )}
                                         {item.requestId && (
                                             <p className='truncate' title={item.requestId}>
                                                 <span className='font-medium text-white/80'>Local ID:</span>{' '}

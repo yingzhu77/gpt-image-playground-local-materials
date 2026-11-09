@@ -1,6 +1,6 @@
 import { calculateApiCost } from '@/lib/cost-utils';
 import type { GptImageModel } from '@/lib/models';
-import { getImageApiClient, ConfigurationError, MockConfigurationError } from '@/lib/server/image-api';
+import { getImageApiClient, ConfigurationError, FixtureConfigurationError, isImageApiFixtureTest } from '@/lib/server/image-api';
 import { readAssetBytes, saveAssetFromBytes } from '@/lib/workbench/assets';
 import { getStaleSendingMs } from '@/lib/workbench/config';
 import {
@@ -93,9 +93,9 @@ async function executeImage(claimed: ClaimedItem): Promise<string> {
         return `skipped:${preflight.action}`;
     }
 
-    if (snapshot.mock && !isImageApiMockModeSafe()) {
-        markItemFailed(item.id, 'MOCK_FIXTURE_MISSING', '该项目创建于 Mock 模式，但当前服务未启用生图 Mock 夹具；为避免真实扣费，未发送请求。', false);
-        return 'failed:mock_fixture_missing';
+    if (snapshot.mock && !isImageApiFixtureTest()) {
+        markItemFailed(item.id, 'TEST_DATA_NOT_EXECUTABLE', '历史测试任务不能发送真实请求；原始数据仍保留。', false);
+        return 'failed:test_data_not_executable';
     }
 
     const model = snapshot.params.model as GptImageModel;
@@ -106,6 +106,10 @@ async function executeImage(claimed: ClaimedItem): Promise<string> {
             markItemFailed(item.id, 'REFERENCE_MISSING', `参考图 ${reference.filename} 已不存在；未发送请求。`, false);
             return 'failed:reference_missing';
         }
+        if (asset.mock && !isImageApiFixtureTest()) {
+            markItemFailed(item.id, 'TEST_DATA_NOT_EXECUTABLE', '历史测试参考不能发送到真实模型。', false);
+            return 'failed:test_reference';
+        }
         referenceAssets.push(asset);
     }
 
@@ -115,6 +119,10 @@ async function executeImage(claimed: ClaimedItem): Promise<string> {
         if (!baseVersion || baseVersion.projectId !== run.projectId) {
             markItemFailed(item.id, 'BASE_VERSION_MISSING', '修订基底版本不存在；未发送请求。', false);
             return 'failed:base_version_missing';
+        }
+        if ((baseVersion.mock || baseVersion.asset.mock) && !isImageApiFixtureTest()) {
+            markItemFailed(item.id, 'TEST_DATA_NOT_EXECUTABLE', '历史测试版本不能作为真实修订基底。', false);
+            return 'failed:test_base_version';
         }
     }
 
@@ -165,7 +173,7 @@ async function executeImage(claimed: ClaimedItem): Promise<string> {
 
     let dispatched = false;
     try {
-        const client = getImageApiClient();
+        const client = getImageApiClient({ localRequestId: item.id, runId: run.id, itemId: item.id });
         dispatched = true;
         const apiResult =
             files.length > 0
@@ -295,6 +303,11 @@ async function executeImage(claimed: ClaimedItem): Promise<string> {
 
 async function executeReview(claimed: ClaimedItem): Promise<string> {
     const { run, item } = claimed;
+    if (run.snapshot.mock && !isImageApiFixtureTest()) {
+        if (item.targetVersionId) markReviewUnavailable(item.id, item.targetVersionId, '历史测试结果不能发送到真实审稿模型。');
+        else markItemSkipped(item.id, 'TEST_DATA_NOT_EXECUTABLE', '历史测试任务不能发送真实请求。');
+        return 'review_unavailable:test_data_not_executable';
+    }
     if (!item.targetVersionId) {
         markItemSkipped(item.id, 'REVIEW_TARGET_MISSING', '审稿目标版本缺失，已跳过。');
         return 'skipped';
@@ -412,8 +425,8 @@ function classifyImageError(error: unknown, dispatched: boolean): { unknown: boo
     if (error instanceof ConfigurationError) {
         return { unknown: false, code: error.code, message };
     }
-    if (error instanceof MockConfigurationError) {
-        return { unknown: false, code: 'MOCK_CONFIGURATION_ERROR', message };
+    if (error instanceof FixtureConfigurationError) {
+        return { unknown: false, code: 'TEST_FIXTURE_CONFIGURATION_ERROR', message };
     }
     if (error instanceof Error && /timeout|timed out|APIConnectionTimeout/i.test(`${error.name} ${error.message}`)) {
         return { unknown: true, code: 'UPSTREAM_TIMEOUT', message: message.slice(0, 300) };
@@ -434,12 +447,3 @@ function classifyImageError(error: unknown, dispatched: boolean): { unknown: boo
         message: message.slice(0, 300)
     };
 }
-
-function isImageApiMockModeSafe(): boolean {
-    try {
-        return !!process.env.IMAGE_API_MOCK_FIXTURE_DIR?.trim() && process.env.NODE_ENV !== 'production';
-    } catch {
-        return false;
-    }
-}
-

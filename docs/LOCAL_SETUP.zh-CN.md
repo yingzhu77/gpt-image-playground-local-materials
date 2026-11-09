@@ -16,7 +16,7 @@
 | npm | `11.6.2` |
 | 依赖安装 | `npm ci`（仓库有 `package-lock.json`） |
 
-Mock 验收使用服务端 SDK 边界的本地 fixture client，不会发送真实 OpenAI 请求，也不会回退到真实网络。真实调用只会在你显式启用开关并手动提交时发生。Node 代理配置见 4.3。
+自动化验收使用服务端 SDK 边界的受限本地 fixture client，不会发送真实 OpenAI 请求，也不会回退到真实网络。真实调用只会在你显式启用开关并手动提交时发生。Node 代理配置见 4.3。
 
 ## 2. 目录与关键文件
 
@@ -28,7 +28,7 @@ gpt-image-playground/
 ├─ scripts/
 │  ├─ start-local.mjs         选择端口并启动 Next.js 与 worker
 │  ├─ workbench-worker.mjs    工作台独立 worker（轮询内部 tick 接口）
-│  ├─ acceptance.mjs          旧入口的无真实 API mock 验收
+│  ├─ acceptance.mjs          旧入口的隔离夹具验收
 │  ├─ workbench-acceptance.mjs 工作台全流程与故障注入验收
 │  └─ workbench-fetcher-test.mts 下载安全单元测试
 ├─ docs/LOCAL_SETUP.zh-CN.md  本文件
@@ -36,8 +36,8 @@ gpt-image-playground/
 ├─ generated-images/          旧入口生成的原图（git 忽略）
 │  └─ metadata/               每次请求的 JSON 元数据（git 忽略）
 ├─ .workbench-data/           工作台 SQLite、素材与 worker token（git 忽略）
-│  └─ mock/                   Mock 模式隔离数据目录（git 忽略）
-└─ test-artifacts/            mock 验收的 fixture、日志与测试图片（git 忽略）
+│  └─ mock/                   历史测试数据（保留，不作为运行模式）
+└─ test-artifacts/            自动化验收的 fixture、日志与测试图片（git 忽略）
 ```
 
 ## 3. 安装与首次检查
@@ -75,7 +75,7 @@ NEXT_PUBLIC_IMAGE_STORAGE_MODE=fs
 
 `.env.local.example` 是可提交的模板，不含真实密钥。若本地文件丢失，可复制模板后填写。
 
-也可以不手动编辑：页面顶部的“配置 API Key / 启用生成”按钮（以及无 Key、未启用且非 mock 时自动出现的弹窗）会调用仅限本机的 `/api/local-config`。勾选“保存到本机 .env.local”时，服务端只替换或新增 `OPENAI_API_KEY` 与 `ENABLE_IMAGE_API`，保留代理配置、注释和其他行。通过弹窗保存后本次运行立即生效，无需重启；修改代理等启动变量仍需重启。
+也可以不手动编辑：页面顶部的“配置 API Key / 启用生成”按钮（以及无 Key 或未启用时自动出现的弹窗）会调用仅限本机的 `/api/local-config`。勾选“保存到本机 .env.local”时，服务端只替换或新增 `OPENAI_API_KEY` 与 `ENABLE_IMAGE_API`，保留代理配置、注释和其他行。通过弹窗保存后本次运行立即生效，无需重启；修改代理等启动变量仍需重启。
 
 ### 4.2 密钥安全
 
@@ -144,7 +144,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 服务是否启用、Key 是否已配置以页面顶部状态和“配置 API Key / 启用生成”弹窗为准；启动日志会打印 `ENABLE_IMAGE_API`、存储模式和 Node 代理状态。真实调用前请确认：
 
 - 页面显示“Key 已配置 / 生成已启用”
-- 没有“生成服务未启用”“未配置 Key”或“MOCK 测试模式”提示
+- 没有“生成服务未启用”“未配置 Key”提示
 - 服务只监听 `127.0.0.1`
 
 首次真实生成的具体步骤见第 10 节。
@@ -264,7 +264,7 @@ generated-images/metadata/<本地 request id>.json
 - 旧记录没有尺寸时显示“未记录（旧记录）”。
 - 旧记录没有 usage 时显示“未知（usage 缺失）”，不会显示成 0 或免费。
 - 费用显示为“根据 usage 估算”，不是 OpenAI 账单或账户余额。
-- MOCK 记录的图片和信息会明确标记为测试数据，并且不计入历史费用合计。
+- 历史测试记录保留在原存储中，从创作列表和费用统计中排除；应用不再提供模拟运行模式。
 
 注意：浏览器历史与磁盘 JSON 元数据目前没有完整同步。清空浏览器历史不会删除磁盘上的原图或 JSON；删除单条历史会删除对应原图，但已写入的 JSON 元数据会保留。JSON 元数据也没有提供页面内的恢复/索引界面。跨浏览器恢复、参考图全量归档和历史库重构留待下一阶段。
 
@@ -287,9 +287,9 @@ generated-images/metadata/<本地 request id>.json
 
 ## 10. 首次真实生成（由你手动操作）
 
-本轮结束时 `ENABLE_IMAGE_API=false`，没有发送真实请求。你确认要开始真实调用后：
+配置示例默认关闭生成；当前实际开关与请求状态以页面和 [工作台现行记录](WORKBENCH.zh-CN.md) 为准。需要启用真实调用时：
 
-1. 打开 `http://127.0.0.1:3000`。若无 Key、未启用且不是 mock，弹窗会自动出现；也可以点击顶部“配置 API Key / 启用生成”。
+1. 打开 `http://127.0.0.1:3000`。若无 Key 或未启用，弹窗会自动出现；也可以点击顶部“配置 API Key / 启用生成”。
 2. 在弹窗中粘贴真实 OpenAI API Key。建议保留“保存到本机 .env.local”勾选；不勾选则只在本次运行中有效，重启后需要重新配置。
 3. 点击“保存并启用真实生成”。保存后不会自动调用 OpenAI；页面应显示“Key 已配置 / 生成已启用”。
 4. 先做一次低成本测试：

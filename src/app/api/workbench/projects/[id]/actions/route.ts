@@ -184,6 +184,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
                         projectId,
                         actionId,
                         sourceRunId: runBody.sourceRunId,
+                        imageCount: runBody.imageCount,
                         budgetUsd: Number(runBody.budgetUsd),
                         riskAcknowledged: runBody.riskAcknowledged === true
                     });

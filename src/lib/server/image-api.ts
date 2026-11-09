@@ -1,12 +1,14 @@
 import type { ImageModeration } from '@/lib/models';
+import { auditImageRequest, type ImageRequestMetadata } from '@/lib/server/image-request-diagnostics';
 import {
     getApiKeySource,
     getEffectiveApiKey,
     hasOpenAiApiKey as hasRuntimeOpenAiApiKey,
     isImageApiEnabled as isRuntimeImageApiEnabled
 } from '@/lib/server/runtime-config';
-import crypto from 'node:crypto';
+import { isWorkbenchFixtureTest } from '@/lib/workbench/config';
 import fs from 'fs/promises';
+import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import path from 'path';
 
@@ -40,10 +42,10 @@ export class ConfigurationError extends Error {
     }
 }
 
-export class MockConfigurationError extends Error {
+export class FixtureConfigurationError extends Error {
     constructor(message: string) {
         super(message);
-        this.name = 'MockConfigurationError';
+        this.name = 'FixtureConfigurationError';
     }
 }
 
@@ -81,8 +83,17 @@ export function hasOpenAiApiKey(): boolean {
  * Test-only fixture provider. It replaces the SDK client entirely and can never fall back
  * to the real network. Production builds refuse to activate it.
  */
-export function isImageApiMockMode(): boolean {
-    return process.env.NODE_ENV !== 'production' && !!process.env.IMAGE_API_MOCK_FIXTURE_DIR?.trim();
+export function isImageApiFixtureTest(): boolean {
+    if (process.env.IMAGE_API_MOCK_FIXTURE_DIR?.trim()) {
+        throw new FixtureConfigurationError(
+            '旧模拟运行配置已移除，请删除 IMAGE_API_MOCK_FIXTURE_DIR；未发送真实请求。'
+        );
+    }
+    if (!process.env.IMAGE_API_TEST_FIXTURE_DIR?.trim()) return false;
+    if (!isWorkbenchFixtureTest()) {
+        throw new FixtureConfigurationError('图片夹具只允许隔离自动化测试使用；未发送真实请求。');
+    }
+    return true;
 }
 
 export function getImageApiConfiguration() {
@@ -90,7 +101,7 @@ export function getImageApiConfiguration() {
         enabled: isImageApiEnabled(),
         apiKeyConfigured: hasOpenAiApiKey(),
         apiKeySource: getApiKeySource(),
-        mock: isImageApiMockMode()
+        testFixture: isImageApiFixtureTest()
     };
 }
 
@@ -98,7 +109,7 @@ export function getImageApiDiagnostics() {
     return {
         timeoutMs: openAiClient?.timeout ?? OpenAI.DEFAULT_TIMEOUT,
         maxRetries: 0,
-        mock: isImageApiMockMode(),
+        testFixture: isImageApiFixtureTest(),
         nodeUseEnvProxy: process.env.NODE_USE_ENV_PROXY === '1',
         proxy: describeProxyForLogs()
     };
@@ -125,9 +136,11 @@ let openAiClient: OpenAI | null = null;
 let openAiClientApiKey: string | null = null;
 let fixtureClient: FixtureImageApiClient | null = null;
 
-export function getImageApiClient(): ImageApiClient {
-    if (isImageApiMockMode()) {
-        fixtureClient ??= new FixtureImageApiClient(process.env.IMAGE_API_MOCK_FIXTURE_DIR!.trim());
+export type ImageRequestContext = Pick<ImageRequestMetadata, 'localRequestId' | 'runId' | 'itemId'>;
+
+export function getImageApiClient(context?: ImageRequestContext): ImageApiClient {
+    if (isImageApiFixtureTest()) {
+        fixtureClient ??= new FixtureImageApiClient(process.env.IMAGE_API_TEST_FIXTURE_DIR!.trim());
         return fixtureClient;
     }
 
@@ -144,77 +157,124 @@ export function getImageApiClient(): ImageApiClient {
         openAiClientApiKey = apiKey;
     }
 
-    return new OpenAiImageApiClient(openAiClient);
+    return new OpenAiImageApiClient(openAiClient, context);
 }
 
 class OpenAiImageApiClient implements ImageApiClient {
     readonly mock = false;
 
-    constructor(private readonly client: OpenAI) {}
+    constructor(
+        private readonly client: OpenAI,
+        private readonly context?: ImageRequestContext
+    ) {}
+
+    private metadata(
+        operation: 'generate' | 'edit',
+        params: OpenAI.Images.ImageGenerateParamsNonStreaming | ImageEditParams
+    ): ImageRequestMetadata {
+        return {
+            localRequestId: this.context?.localRequestId ?? crypto.randomUUID(),
+            runId: this.context?.runId,
+            itemId: this.context?.itemId,
+            operation,
+            model: String(params.model ?? ''),
+            size: params.size,
+            quality: params.quality,
+            n: params.n,
+            sdkTimeoutMs: this.client.timeout,
+            maxRetries: 0
+        };
+    }
 
     async generate(params: OpenAI.Images.ImageGenerateParamsNonStreaming): Promise<ImageApiCallResult> {
-        const { data, request_id } = await this.client.images.generate(params).withResponse();
-        return { result: data, openaiRequestId: request_id, mock: false };
+        let httpStatus: number | undefined;
+        return auditImageRequest(
+            this.metadata('generate', params),
+            async () => {
+                const { data, request_id, response } = await this.client.images.generate(params).withResponse();
+                httpStatus = response.status;
+                return { result: data, openaiRequestId: request_id, mock: false };
+            },
+            (value) => ({ httpStatus, upstreamRequestId: value.openaiRequestId })
+        );
     }
 
     async edit(params: ImageEditParams): Promise<ImageApiCallResult> {
-        const { data: stream, request_id } = await this.client.images
-            .edit({ ...params, stream: true, partial_images: STREAM_PARTIAL_IMAGES })
-            .withResponse();
+        let httpStatus: number | undefined;
+        let upstreamRequestId: string | null = null;
+        return auditImageRequest(
+            this.metadata('edit', params),
+            async () => {
+                const {
+                    data: stream,
+                    request_id,
+                    response
+                } = await this.client.images
+                    .edit({ ...params, stream: true, partial_images: STREAM_PARTIAL_IMAGES })
+                    .withResponse();
+                httpStatus = response.status;
+                upstreamRequestId = request_id;
 
-        let completed: OpenAI.Images.ImageEditCompletedEvent | null = null;
-        let partialImageCount = 0;
-        let lastEventType: string | null = null;
+                let completed: OpenAI.Images.ImageEditCompletedEvent | null = null;
+                let partialImageCount = 0;
+                let lastEventType: string | null = null;
 
-        try {
-            for await (const event of stream) {
-                lastEventType = event.type;
-                if (event.type === 'image_edit.partial_image') {
-                    partialImageCount++;
+                try {
+                    for await (const event of stream) {
+                        lastEventType = event.type;
+                        if (event.type === 'image_edit.partial_image') {
+                            partialImageCount++;
+                        }
+                        if (event.type === 'image_edit.completed') {
+                            completed = event;
+                        }
+                    }
+                } catch (error) {
+                    const status =
+                        typeof error === 'object' &&
+                        error !== null &&
+                        'status' in error &&
+                        typeof error.status === 'number'
+                            ? error.status
+                            : undefined;
+                    if (status !== undefined) {
+                        throw error;
+                    }
+
+                    throw new ImageStreamError(`OpenAI 流式编辑连接中断（已收到 ${partialImageCount} 个部分图）。`, {
+                        cause: error,
+                        requestId: request_id,
+                        partialImageCount,
+                        lastEventType
+                    });
                 }
-                if (event.type === 'image_edit.completed') {
-                    completed = event;
+
+                if (!completed) {
+                    throw new ImageStreamError(
+                        `OpenAI 流式编辑响应结束，但没有返回最终图片（已收到 ${partialImageCount} 个部分图）。`,
+                        {
+                            requestId: request_id,
+                            partialImageCount,
+                            lastEventType
+                        }
+                    );
                 }
-            }
-        } catch (error) {
-            const status =
-                typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number'
-                    ? error.status
-                    : undefined;
-            if (status !== undefined) {
-                throw error;
-            }
 
-            throw new ImageStreamError(`OpenAI 流式编辑连接中断（已收到 ${partialImageCount} 个部分图）。`, {
-                cause: error,
-                requestId: request_id,
-                partialImageCount,
-                lastEventType
-            });
-        }
+                const result = {
+                    created: completed.created_at,
+                    data: [{ b64_json: completed.b64_json }],
+                    background: completed.background,
+                    output_format: completed.output_format,
+                    quality: completed.quality,
+                    size: completed.size,
+                    usage: completed.usage
+                } as OpenAI.Images.ImagesResponse;
 
-        if (!completed) {
-            throw new ImageStreamError(
-                `OpenAI 流式编辑响应结束，但没有返回最终图片（已收到 ${partialImageCount} 个部分图）。`,
-                {
-                    requestId: request_id,
-                    partialImageCount,
-                    lastEventType
-                }
-            );
-        }
-
-        const result = {
-            created: completed.created_at,
-            data: [{ b64_json: completed.b64_json }],
-            background: completed.background,
-            output_format: completed.output_format,
-            quality: completed.quality,
-            size: completed.size,
-            usage: completed.usage
-        } as OpenAI.Images.ImagesResponse;
-
-        return { result, openaiRequestId: request_id, mock: false };
+                return { result, openaiRequestId: request_id, mock: false };
+            },
+            (value) => ({ httpStatus, upstreamRequestId: value.openaiRequestId }),
+            () => ({ httpStatus, upstreamRequestId })
+        );
     }
 }
 
@@ -279,7 +339,7 @@ class FixtureImageApiClient implements ImageApiClient {
         const background = params.background ?? 'auto';
         const format = params.output_format ?? 'png';
         let bytes = await this.readFixture(size, background, format, scenario.fixture);
-        if (process.env.IMAGE_API_MOCK_UNIQUE === '1') {
+        if (process.env.IMAGE_API_TEST_UNIQUE === '1') {
             bytes = injectPngText(bytes, 'MockNonce', crypto.randomUUID());
         }
         const usage = scenario.usage === 'missing' ? undefined : MOCK_USAGE;
@@ -302,7 +362,7 @@ class FixtureImageApiClient implements ImageApiClient {
     }
 
     private async readScenario(): Promise<MockScenario> {
-        const scenarioFile = process.env.IMAGE_API_MOCK_SCENARIO_FILE?.trim();
+        const scenarioFile = process.env.IMAGE_API_TEST_SCENARIO_FILE?.trim();
         if (!scenarioFile) return {};
 
         try {
@@ -312,7 +372,7 @@ class FixtureImageApiClient implements ImageApiClient {
             );
             return JSON.parse(content) as MockScenario;
         } catch (error) {
-            throw new MockConfigurationError(
+            throw new FixtureConfigurationError(
                 `无法读取 mock 场景文件：${error instanceof Error ? error.message : String(error)}`
             );
         }
@@ -329,7 +389,7 @@ class FixtureImageApiClient implements ImageApiClient {
             try {
                 return await fs.readFile(path.join(/*turbopackIgnore: true*/ this.fixtureDir, filename));
             } catch (error) {
-                throw new MockConfigurationError(
+                throw new FixtureConfigurationError(
                     `无法读取指定的 mock fixture ${filename}：${error instanceof Error ? error.message : String(error)}`
                 );
             }
@@ -352,13 +412,13 @@ class FixtureImageApiClient implements ImageApiClient {
                 if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
                     continue;
                 }
-                throw new MockConfigurationError(
+                throw new FixtureConfigurationError(
                     `读取 mock 图片失败 ${filename}：${error instanceof Error ? error.message : String(error)}`
                 );
             }
         }
 
-        throw new MockConfigurationError(
+        throw new FixtureConfigurationError(
             `缺少 mock 图片 fixture（尝试过：${candidates.join(', ')}），不会回退到真实 OpenAI 请求。`
         );
     }
@@ -387,7 +447,7 @@ class FixtureImageApiClient implements ImageApiClient {
         params: OpenAI.Images.ImageGenerateParamsNonStreaming | ImageEditParams,
         scenario: MockScenario
     ): Promise<void> {
-        const logFile = process.env.IMAGE_API_MOCK_LOG?.trim();
+        const logFile = process.env.IMAGE_API_TEST_LOG?.trim();
         if (!logFile) return;
 
         const imageFiles = operation === 'edit' ? toFileList((params as ImageEditParams).image) : [];
@@ -422,7 +482,7 @@ class FixtureImageApiClient implements ImageApiClient {
                 'utf8'
             );
         } catch (error) {
-            throw new MockConfigurationError(
+            throw new FixtureConfigurationError(
                 `无法写入 mock 日志：${error instanceof Error ? error.message : String(error)}`
             );
         }

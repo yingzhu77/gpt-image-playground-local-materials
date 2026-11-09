@@ -1,11 +1,11 @@
 import {
     getPlannerModel,
     getPlannerReasoningEffort,
-    isWorkbenchMock,
+    isWorkbenchFixtureTest,
     type PlannerReasoningEffort
 } from '@/lib/workbench/config';
 import { callStructuredJson } from '@/lib/workbench/llm';
-import { mockCreateDesignDraft, mockUpdateDesign } from '@/lib/workbench/mock';
+import { fixtureCreateDesignDraft, fixtureUpdateDesign } from '@/lib/workbench/test-fixtures';
 import { DESIGN_SCHEMA, mergeDesignProposal, sanitizeDesignCard } from '@/lib/workbench/schema';
 import type { DesignCard, DesignFieldKey, DesignUpdateResult, ReferenceBinding } from '@/lib/workbench/types';
 
@@ -30,8 +30,9 @@ export async function createDesignDraft(input: {
     reasoningEffort?: PlannerReasoningEffort;
 }): Promise<{ name: string; card: DesignCard; model: string; reasoningEffort: PlannerReasoningEffort }> {
     const reasoningEffort = input.reasoningEffort ?? getPlannerReasoningEffort();
-    if (input.mock || isWorkbenchMock()) {
-        const draft = await mockCreateDesignDraft(input);
+    if (input.mock && !isWorkbenchFixtureTest()) throw new Error('历史测试设计不能发送到真实规划模型。');
+    if (isWorkbenchFixtureTest()) {
+        const draft = await fixtureCreateDesignDraft(input);
         return { ...draft, model: input.model ?? 'mock-planner', reasoningEffort };
     }
 
@@ -76,8 +77,9 @@ export async function updateDesign(input: {
     reasoningEffort?: PlannerReasoningEffort;
 }): Promise<DesignUpdateResult & { model: string; reasoningEffort: PlannerReasoningEffort }> {
     const reasoningEffort = input.reasoningEffort ?? getPlannerReasoningEffort();
-    if (input.mock || isWorkbenchMock()) {
-        const result = await mockUpdateDesign(input);
+    if (input.mock && !isWorkbenchFixtureTest()) throw new Error('历史测试设计不能发送到真实规划模型。');
+    if (isWorkbenchFixtureTest()) {
+        const result = await fixtureUpdateDesign(input);
         return { ...result, model: input.model ?? 'mock-planner', reasoningEffort };
     }
 

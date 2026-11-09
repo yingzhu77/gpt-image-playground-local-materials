@@ -102,19 +102,20 @@ async function findFreePort(start) {
 function serverEnv(port) {
     return {
         NODE_ENV: 'development',
+        WORKBENCH_MOCK: '',
+        IMAGE_API_MOCK_FIXTURE_DIR: '',
         OPENAI_API_KEY: '',
         ENABLE_IMAGE_API: 'true',
         NEXT_PUBLIC_IMAGE_STORAGE_MODE: 'fs',
         NEXT_TELEMETRY_DISABLED: '1',
-        IMAGE_API_MOCK_FIXTURE_DIR: fixtureDir,
-        IMAGE_API_MOCK_SCENARIO_FILE: scenarioFile,
-        IMAGE_API_MOCK_LOG: mockLog,
-        IMAGE_API_MOCK_UNIQUE: '1',
+        IMAGE_API_TEST_FIXTURE_DIR: fixtureDir,
+        IMAGE_API_TEST_SCENARIO_FILE: scenarioFile,
+        IMAGE_API_TEST_LOG: mockLog,
+        IMAGE_API_TEST_UNIQUE: '1',
         IMAGE_OUTPUT_DIR: outputDir,
-        WORKBENCH_MOCK: '1',
+        WORKBENCH_TEST_FIXTURES: '1',
         WORKBENCH_DATA_DIR: dataDir,
-        WORKBENCH_MODE_DIR: path.join(artifactsDir, 'mode'),
-        WORKBENCH_MOCK_SCENARIO_FILE: scenarioFile,
+        WORKBENCH_TEST_SCENARIO_FILE: scenarioFile,
         WORKBENCH_WORKER_TOKEN: token,
         WORKBENCH_WORKER_URL: `http://127.0.0.1:${port}`,
         WORKBENCH_TEST_STRICT_AUTHORIZATION: '1',
@@ -136,12 +137,12 @@ async function waitForServer(url, timeoutMs = 120000) {
     throw new Error(`Server did not become ready at ${url}`);
 }
 
-async function startServer(port) {
+async function startServer(port, overrides = {}) {
     const logFd = fsSync.openSync(serverLogPath, 'a');
     const child = spawn(
         process.execPath,
         [nextBin, 'dev', '--turbopack', '--hostname', '127.0.0.1', '--port', String(port)],
-        { cwd: repoRoot, env: { ...process.env, ...serverEnv(port) }, stdio: ['ignore', logFd, logFd] }
+        { cwd: repoRoot, env: { ...process.env, ...serverEnv(port), ...overrides }, stdio: ['ignore', logFd, logFd] }
     );
     const url = `http://127.0.0.1:${port}`;
     try {
@@ -340,7 +341,7 @@ async function main() {
         const home = await api(baseUrl, '/');
         check('legacy home page still returns 200', home.status === 200);
         const status = await api(baseUrl, '/api/workbench/status');
-        check('status is mock', status.json?.status?.mock === true, status.text);
+        check('status has no retired mode flags', status.json?.status && !('mock' in status.json.status) && !('mode' in status.json.status) && !('autoRestartAvailable' in status.json.status), status.text);
         check('default planner model is gpt-6.1-sol', status.json?.status?.plannerModel === 'gpt-6.1-sol', status.text);
         check(
             'planner model list is switchable',
@@ -357,28 +358,10 @@ async function main() {
         check('search model default is gpt-6.1-sol', status.json?.status?.searchModel === 'gpt-6.1-sol');
         check('review model default is gpt-6.1-sol', status.json?.status?.reviewModel === 'gpt-6.1-sol');
         check('analysis model default is gpt-6.1-sol', status.json?.status?.analysisModel === 'gpt-6.1-sol');
-        check('status reports current mock mode', status.json?.status?.mode === 'mock');
-        check('status reports no auto-restart watcher in this harness', status.json?.status?.autoRestartAvailable === false);
-
-        const modeInfo = await api(baseUrl, '/api/workbench/mode');
-        check(
-            'mode endpoint reports mock and no active runs',
-            modeInfo.status === 200 && modeInfo.json?.mode === 'mock' && modeInfo.json?.activeRuns === false,
-            modeInfo.text
-        );
-        const invalidMode = await postJson(baseUrl, '/api/workbench/mode', { mode: 'bad', confirm: true });
-        check('invalid runtime mode is rejected', invalidMode.status === 400 && invalidMode.json?.code === 'INVALID_MODE');
-        const noModeConfirm = await postJson(baseUrl, '/api/workbench/mode', { mode: 'real', confirm: false });
-        check(
-            'mode switch requires explicit confirmation',
-            noModeConfirm.status === 400 && noModeConfirm.json?.code === 'CONFIRM_REQUIRED'
-        );
-        const noWatcher = await postJson(baseUrl, '/api/workbench/mode', { mode: 'real', confirm: true });
-        check(
-            'mode switch explains missing auto-restart watcher',
-            noWatcher.status === 409 && noWatcher.json?.code === 'AUTO_RESTART_UNAVAILABLE',
-            noWatcher.text
-        );
+        const removedModeGet = await api(baseUrl, '/api/workbench/mode');
+        const removedModePost = await postJson(baseUrl, '/api/workbench/mode', { mode: 'mock', confirm: true });
+        check('retired mode GET endpoint is unavailable', removedModeGet.status === 404);
+        check('retired mode POST endpoint is unavailable', removedModePost.status === 404);
         const projectsEmpty = await api(baseUrl, '/api/workbench/projects');
         checkEqual('no projects yet', projectsEmpty.json?.projects?.length, 0);
         check('page load and history reads do not call image API', readMockLog().length === initialMockCalls, `got ${readMockLog().length}`);
@@ -807,18 +790,6 @@ async function main() {
         check('zero budget is blocked', zeroBudget.status === 400 && zeroBudget.json?.code === 'INVALID_BUDGET', zeroBudget.text);
         check('blocked authorizations never call image API', readMockLog().length === callsBeforeRefresh + 2 + 1 + 2);
 
-        const activeModeRun = await action(baseUrl, projectAId, 'run.create', {
-            actionId: `acceptance-mode-active-${Date.now()}`,
-            run: { ...genPayload.run, imageCount: 1 }
-        });
-        const blockedByActive = await postJson(baseUrl, '/api/workbench/mode', { mode: 'real', confirm: true });
-        check(
-            'mode switch is blocked while tasks are active',
-            blockedByActive.status === 409 && blockedByActive.json?.code === 'ACTIVE_RUNS',
-            blockedByActive.text
-        );
-        await action(baseUrl, projectAId, 'run.stop', { runId: activeModeRun.json.run.id });
-
         // ---------- Partial failure ----------
         setScenario({ usage: 'present' });
         const partialResponse = await action(baseUrl, projectAId, 'run.create', {
@@ -867,6 +838,8 @@ async function main() {
         check('connection loss is unknown, not failed', unknownRun?.items[0]?.status === 'unknown');
         check('unknown result pauses the batch', unknownRun?.status === 'paused_unknown');
         check('unknown result does not start second image', readMockLog().length === logBeforeUnknown + 1);
+        // Preserve an engine-produced fault response for isolated browser regression.
+        fs.writeFileSync(path.join(artifactsDir, 'unknown-ui-fixture.json'), JSON.stringify(await detail(baseUrl, projectAId)));
         const stopUnknownResponse = await action(baseUrl, projectAId, 'run.create', {
             actionId: `acceptance-unknown-stop-${Date.now()}`,
             run: { ...genPayload.run, imageCount: 1 }
@@ -907,6 +880,7 @@ async function main() {
         const budgetRun = await findRun(projectAId, budgetRunId, baseUrl);
         check('budget cap blocks next image', budgetRun?.items[0]?.errorCode === 'BUDGET_EXCEEDED' && budgetRun?.status === 'paused_budget', budgetRun?.items[0]?.errorCode);
         check('budget block does not call image API', readMockLog().length === logBeforeBudget);
+        fs.writeFileSync(path.join(artifactsDir, 'budget-ui-fixture.json'), JSON.stringify(await detail(baseUrl, projectAId)));
 
         // ---------- Call limit enforcement ----------
         const limitResponse = await action(baseUrl, projectAId, 'run.create', {
@@ -1128,8 +1102,52 @@ async function main() {
             // ignore
         }
 
+        // ---------- A single reroll must not repeat the successful sibling ----------
+        const callsBeforeSingle = readMockLog().length;
+        const beforeSingleDetail = await detail(baseUrl, projectAId);
+        const originalSnapshot = beforeSingleDetail.runs.find((run) => run.id === genRunId).snapshot;
+        const singleRerollResponse = await action(baseUrl, projectAId, 'run.create', {
+            actionId: `acceptance-single-reroll-${Date.now()}`,
+            run: { action: 'reroll', sourceRunId: genRunId, imageCount: 1, budgetUsd: 1, riskAcknowledged: true }
+        });
+        const singleReroll = singleRerollResponse.json?.run;
+        check('one-image reroll creates exactly one image item', singleRerollResponse.status === 200 && singleReroll?.items.filter((item) => item.kind === 'image').length === 1, singleRerollResponse.text);
+        checkEqual('one-image reroll snapshot keeps original inputs and changes only count', {
+            prompt: singleReroll?.snapshot.prompt,
+            avoid: singleReroll?.snapshot.avoid,
+            references: singleReroll?.snapshot.references,
+            params: singleReroll?.snapshot.params
+        }, {
+            prompt: originalSnapshot.prompt,
+            avoid: originalSnapshot.avoid,
+            references: originalSnapshot.references,
+            params: { ...originalSnapshot.params, imageCount: 1 }
+        });
+        check('one-image reroll authorizes one image and one review', singleReroll?.snapshot.authorization.maxImageOutputs === 1 && singleReroll?.snapshot.authorization.maxCalls === 2);
+        const singleTicks = await drain(baseUrl);
+        check('one-image reroll executes one image and one review', singleTicks.filter((item) => item.didWork).length === 2, JSON.stringify(singleTicks));
+        checkEqual('one-image reroll reaches image provider exactly once', readMockLog().length, callsBeforeSingle + 1);
+        const afterSingleDetail = await detail(baseUrl, projectAId);
+        checkEqual('one-image reroll preserves source snapshot', afterSingleDetail.runs.find((run) => run.id === genRunId).snapshot, originalSnapshot);
+        checkEqual('one-image reroll adds only one version', afterSingleDetail.versions.length, beforeSingleDetail.versions.length + 1);
+        const rejectedExpansion = await action(baseUrl, projectAId, 'run.create', {
+            actionId: `acceptance-expand-single-${Date.now()}`,
+            run: { action: 'reroll', sourceRunId: singleReroll.id, imageCount: 2, budgetUsd: 1, riskAcknowledged: true }
+        });
+        check('one-image source cannot silently expand to two requests', rejectedExpansion.status === 400 && rejectedExpansion.json?.code === 'INVALID_IMAGE_COUNT', rejectedExpansion.text);
+        for (const invalidCount of [null, 0, 3, '1']) {
+            const rejectedCount = await action(baseUrl, projectAId, 'run.create', {
+                actionId: `acceptance-invalid-reroll-${Date.now()}-${String(invalidCount)}`,
+                run: { action: 'reroll', sourceRunId: genRunId, imageCount: invalidCount, budgetUsd: 1, riskAcknowledged: true }
+            });
+            check(`reroll rejects invalid image count ${JSON.stringify(invalidCount)}`, rejectedCount.status === 400 && rejectedCount.json?.code === 'INVALID_IMAGE_COUNT', rejectedCount.text);
+        }
+        checkEqual('rejected reroll expansion sends no image request', readMockLog().length, callsBeforeSingle + 1);
+
         // ---------- Secrets and bundle ----------
-        const staticDir = path.join(repoRoot, '.next', 'static');
+        const distDir = path.join(repoRoot, process.env.NEXT_DIST_DIR || '.next');
+        const staticDir = fs.existsSync(path.join(distDir, 'dev', 'static'))
+            ? path.join(distDir, 'dev', 'static') : path.join(distDir, 'static');
         const jsFiles = [];
         const walk = (dir) => {
             let entries = [];
@@ -1161,11 +1179,39 @@ async function main() {
         check('worker log contains no token value', !workerLog.includes(token));
         check('server log contains no key material', !/sk-proj-|sk-svcacct-|Authorization:\s*Bearer/i.test(serverLog));
 
-        // ---------- Screenshot evidence (mock mode) ----------
-        const screenshotOk = screenshot(`${baseUrl}/workbench?project=${projectAId}`, 'workbench-mock.png');
-        check('mock-mode screenshot captured', screenshotOk, screenshotDir);
-        const homeScreenshot = screenshot(baseUrl, 'home-mock.png');
+        // ---------- Screenshot evidence (isolated fixtures) ----------
+        const screenshotOk = screenshot(`${baseUrl}/workbench?project=${projectAId}`, 'workbench-fixture.png');
+        check('isolated fixture screenshot captured', screenshotOk, screenshotDir);
+        const homeScreenshot = screenshot(baseUrl, 'home-fixture.png');
         check('legacy entry screenshot captured', homeScreenshot, screenshotDir);
+
+        // Ordinary runtime must neither expose nor execute historical fixture projects.
+        const beforeArchiveDb = openDb();
+        const archiveBefore = beforeArchiveDb.prepare('SELECT id, status FROM run_items ORDER BY id').all();
+        const projectCountBefore = beforeArchiveDb.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+        beforeArchiveDb.close();
+        await stopProcess(server.child);
+        fsSync.closeSync(server.logFd);
+        server = null;
+        server = await startServer(port, {
+            NEXT_DIST_DIR: `${process.env.NEXT_DIST_DIR || '.next'}-ordinary`,
+            WORKBENCH_TEST_FIXTURES: '', IMAGE_API_TEST_FIXTURE_DIR: ''
+        });
+        const ordinaryList = await api(baseUrl, '/api/workbench/projects');
+        checkEqual('ordinary runtime hides historical fixture projects', ordinaryList.json?.projects, []);
+        const archivedDetail = await api(baseUrl, `/api/workbench/projects/${projectAId}`);
+        check('historical fixture detail is unavailable to ordinary runtime', archivedDetail.status === 404);
+        const logBeforeArchivedAction = readMockLog().length;
+        const archivedAction = await action(baseUrl, projectAId, 'run.create', {
+            actionId: `blocked-archived-${Date.now()}`, run: genPayload.run
+        });
+        check('historical fixture cannot create a real paid run', archivedAction.status === 404 || (archivedAction.status === 409 && archivedAction.json?.code === 'TEST_DATA_NOT_EXECUTABLE'), archivedAction.text);
+        checkEqual('archived action sends no image request', readMockLog().length, logBeforeArchivedAction);
+        const afterArchiveDb = openDb();
+        checkEqual('historical task records are preserved', afterArchiveDb.prepare('SELECT id, status FROM run_items ORDER BY id').all(), archiveBefore);
+        checkEqual('historical projects are preserved', afterArchiveDb.prepare('SELECT COUNT(*) AS count FROM projects').get().count, projectCountBefore);
+        afterArchiveDb.close();
+
     } finally {
         if (worker) await stopProcess(worker);
         if (localHttp) localHttp.close();

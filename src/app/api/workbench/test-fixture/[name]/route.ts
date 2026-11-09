@@ -1,4 +1,4 @@
-import { isWorkbenchMock, getCandidateDir } from '@/lib/workbench/config';
+import { isWorkbenchFixtureTest, getCandidateDir } from '@/lib/workbench/config';
 import { errorResponse, requireLoopbackHost } from '@/lib/workbench/http';
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'node:fs/promises';
@@ -10,8 +10,8 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest, { params }: { params: Promise<{ name: string }> }) {
     try {
         requireLoopbackHost(request);
-        if (!isWorkbenchMock()) {
-            return NextResponse.json({ error: '模拟候选图仅在 Mock 模式可用。' }, { status: 404 });
+        if (!isWorkbenchFixtureTest()) {
+            return NextResponse.json({ error: '测试夹具不可用于普通运行。' }, { status: 404 });
         }
         const { name } = await params;
         const safe = path.basename(name);
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
                 'Content-Type': 'image/png',
                 'Cache-Control': 'private, max-age=300',
                 'X-Content-Type-Options': 'nosniff',
-                'X-Mock': '1'
+                'X-Test-Fixture': '1'
             }
         });
     } catch (error) {

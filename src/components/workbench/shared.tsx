@@ -34,15 +34,15 @@ export function Badge({
     tone?: 'neutral' | 'green' | 'yellow' | 'red' | 'purple' | 'blue';
 }) {
     const tones: Record<string, string> = {
-        neutral: 'border-neutral-700 bg-neutral-800 text-neutral-300',
-        green: 'border-green-500/40 bg-green-900/30 text-green-300',
-        yellow: 'border-yellow-500/40 bg-yellow-900/30 text-yellow-200',
-        red: 'border-red-500/40 bg-red-900/30 text-red-300',
-        purple: 'border-purple-500/40 bg-purple-900/30 text-purple-200',
-        blue: 'border-blue-500/40 bg-blue-900/30 text-blue-200'
+        neutral: 'border-wb-border bg-wb-subtle text-wb-muted',
+        green: 'border-wb-success bg-wb-success-soft text-wb-success',
+        yellow: 'border-wb-warning bg-wb-warning-soft text-wb-warning',
+        red: 'border-wb-error bg-wb-error-soft text-wb-error',
+        purple: 'border-wb-accent bg-wb-accent-soft text-wb-accent',
+        blue: 'border-wb-info bg-wb-info-soft text-wb-info'
     };
     return (
-        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${tones[tone]}`}>
+        <span className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${tones[tone]}`}>
             {children}
         </span>
     );
@@ -60,15 +60,15 @@ export function Section({
     children: React.ReactNode;
 }) {
     return (
-        <section className='rounded-lg border border-neutral-800 bg-neutral-900/50'>
-            <header className='flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 px-3 py-2'>
+        <section className='border-wb-border bg-wb-panel rounded-lg border'>
+            <header className='border-wb-border flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3'>
                 <div>
-                    <h2 className='text-sm font-semibold text-neutral-100'>{title}</h2>
-                    {description && <p className='mt-0.5 text-[11px] text-neutral-400'>{description}</p>}
+                    <h2 className='text-wb-ink text-base font-semibold'>{title}</h2>
+                    {description && <p className='text-wb-muted mt-1 text-xs leading-relaxed'>{description}</p>}
                 </div>
                 {actions}
             </header>
-            <div className='space-y-3 p-3'>{children}</div>
+            <div className='space-y-4 p-4'>{children}</div>
         </section>
     );
 }
@@ -76,16 +76,19 @@ export function Section({
 export function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
     return (
         <div className='flex items-baseline justify-between gap-2'>
-            <span className='text-[11px] font-medium text-neutral-300'>{children}</span>
-            {hint && <span className='text-[10px] text-neutral-500'>{hint}</span>}
+            <span className='text-wb-ink text-sm font-medium'>{children}</span>
+            {hint && <span className='text-wb-muted text-xs'>{hint}</span>}
         </div>
     );
 }
 
 export function Spinner({ label }: { label?: string }) {
     return (
-        <span className='inline-flex items-center gap-2 text-xs text-neutral-400'>
-            <span className='size-3 animate-spin rounded-full border border-neutral-600 border-t-neutral-200' />
+        <span className='text-wb-muted inline-flex items-center gap-2 text-sm'>
+            <span
+                aria-hidden='true'
+                className='border-wb-border border-t-wb-accent size-3 animate-spin rounded-full border'
+            />
             {label}
         </span>
     );
@@ -108,14 +111,44 @@ export function RunStatusBadge({ status }: { status: string }) {
 
 export function useSyncedState<T>(source: T, key: string): [T, React.Dispatch<React.SetStateAction<T>>] {
     const [value, setValue] = React.useState<T>(source);
-    const lastKey = React.useRef(key);
+    const previous = React.useRef({ key, source: JSON.stringify(source) });
     React.useEffect(() => {
-        if (lastKey.current !== key) {
-            lastKey.current = key;
-            setValue(source);
+        const serialized = JSON.stringify(source);
+        if (previous.current.key !== key || previous.current.source !== serialized) {
+            const was = previous.current.source;
+            previous.current = { key, source: serialized };
+            // Polling may update server metadata while a user is typing. Only clean
+            // inputs follow the server; saved values already equal the new source.
+            setValue((current) => (JSON.stringify(current) === was ? source : current));
         }
     }, [key, source]);
     return [value, setValue];
+}
+
+export const DraftStatusContext = React.createContext<(key: string, dirty: boolean) => void>(() => {});
+
+export function useDraftStatus(key: string, dirty: boolean) {
+    const report = React.useContext(DraftStatusContext);
+    React.useEffect(() => {
+        report(key, dirty);
+        return () => report(key, false);
+    }, [key, dirty, report]);
+}
+
+export function handleTabListKeys(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const index = tabs.indexOf(event.target as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next =
+        event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? tabs.length - 1
+              : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next]?.focus();
+    tabs[next]?.click();
 }
 
 export function isActiveRun(detail: ProjectDetail | null): boolean {
@@ -123,6 +156,7 @@ export function isActiveRun(detail: ProjectDetail | null): boolean {
     const activeStatuses = new Set(['queued', 'running']);
     return detail.runs.some(
         (run) =>
-            activeStatuses.has(run.status) || run.items.some((item) => item.status === 'pending' || item.status === 'sending')
+            activeStatuses.has(run.status) ||
+            run.items.some((item) => item.status === 'pending' || item.status === 'sending')
     );
 }

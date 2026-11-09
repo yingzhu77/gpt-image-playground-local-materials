@@ -58,7 +58,6 @@ export function newActionId(): string {
 
 export function formatUsd(value: number | null): string {
     if (value === null) return '未知';
-    if (value === 0) return '$0（Mock）';
     return `$${value.toFixed(4)}`;
 }
 

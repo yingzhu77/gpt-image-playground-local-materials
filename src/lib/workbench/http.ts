@@ -1,7 +1,7 @@
 import { ConfigurationError } from '@/lib/server/image-api';
 import { WorkbenchError } from '@/lib/workbench/service';
 import { getWorkerToken } from '@/lib/workbench/config';
-import { MockWorkbenchError } from '@/lib/workbench/mock';
+import { FixtureWorkbenchError } from '@/lib/workbench/test-fixtures';
 import { StructuredOutputError } from '@/lib/workbench/schema';
 import { SafeDownloadError } from '@/lib/workbench/fetcher';
 import { SearchProviderError } from '@/lib/workbench/search';
@@ -111,8 +111,8 @@ export function errorResponse(error: unknown) {
     if (error instanceof ConfigurationError) {
         return workbenchJson({ error: error.message, code: error.code }, 503);
     }
-    if (error instanceof MockWorkbenchError) {
-        return workbenchJson({ error: error.message, code: 'MOCK_ERROR' }, 500);
+    if (error instanceof FixtureWorkbenchError) {
+        return workbenchJson({ error: error.message, code: 'TEST_FIXTURE_ERROR' }, 500);
     }
     if (error instanceof StructuredOutputError) {
         return workbenchJson({ error: `结构化输出不合格：${error.message}`, code: 'STRUCTURED_OUTPUT_INVALID' }, 502);

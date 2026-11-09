@@ -1,8 +1,8 @@
 'use client';
 
-import { Badge, Section, type PanelProps } from '@/components/workbench/shared';
 import { Button } from '@/components/ui/button';
-import type { ReviewIssueType } from '@/lib/workbench/types';
+import { Badge, RunStatusBadge, Section, type PanelProps } from '@/components/workbench/shared';
+import { DESIGN_FIELD_LABELS, REFERENCE_PURPOSE_LABELS, type ReviewIssueType } from '@/lib/workbench/types';
 import * as React from 'react';
 
 const ISSUE_LABELS: Record<ReviewIssueType, { label: string; tone: 'red' | 'yellow' | 'blue' }> = {
@@ -10,12 +10,7 @@ const ISSUE_LABELS: Record<ReviewIssueType, { label: string; tone: 'red' | 'yell
     uncertainty: { label: '不确定疑点', tone: 'yellow' },
     aesthetic: { label: '审美建议', tone: 'blue' }
 };
-
-const CONFIDENCE_LABELS: Record<string, string> = {
-    high: '高确定度',
-    medium: '中确定度',
-    low: '低确定度'
-};
+const CONFIDENCE_LABELS: Record<string, string> = { high: '高确定度', medium: '中确定度', low: '低确定度' };
 
 export function ReviewPanel({
     detail,
@@ -23,16 +18,20 @@ export function ReviewPanel({
     selectedVersionId,
     onOpenRevision,
     onAction,
-    notify
+    notify,
+    setError
 }: PanelProps & { onOpenRevision: (versionId: string, suggestions?: { change: string; keep: string }[]) => void }) {
     const version =
-        detail.versions.find((item) => item.id === selectedVersionId) ?? detail.versions[detail.versions.length - 1] ?? null;
+        detail.versions.find((item) => item.id === selectedVersionId) ??
+        detail.versions[detail.versions.length - 1] ??
+        null;
     const review = version?.review ?? null;
     const latestRun = detail.runs[0] ?? null;
     const batchComparison =
         review?.comparison ??
         (version
-            ? detail.versions.find((item) => item.runId === version.runId && item.review?.comparison)?.review?.comparison ?? null
+            ? (detail.versions.find((item) => item.runId === version.runId && item.review?.comparison)?.review
+                  ?.comparison ?? null)
             : null);
     const [localBusy, setLocalBusy] = React.useState(false);
 
@@ -40,126 +39,220 @@ export function ReviewPanel({
         if (!version) return;
         setLocalBusy(true);
         try {
-            await onAction('version.baseline', { versionId: version.id });
-            notify(`已把 ${version.label} 设为基准。`);
+            const result = await onAction('version.baseline', { versionId: version.id });
+            if (result) notify(`已把 ${version.label} 设为基准。`);
+        } catch (error) {
+            setError(error instanceof Error ? error.message : '基准设置未确认，请刷新核对。');
         } finally {
             setLocalBusy(false);
         }
     }
 
     return (
-        <div className='space-y-3'>
+        <div className='min-w-0 space-y-4'>
             <Section
                 title='审稿与建议'
-                description={version ? `当前版本 ${version.label} · ${version.reviewStatus === 'available' ? '已审稿' : version.reviewStatus === 'pending' ? '审稿排队中' : '审稿暂不可用'}` : '还没有结果'}
-                actions={
-                    version ? (
-                        <div className='flex gap-1.5'>
-                            {!version.isBaseline && (
-                                <Button size='sm' variant='outline' disabled={busy || localBusy} onClick={() => void setBaseline()}>
-                                    设为基准
-                                </Button>
-                            )}
-                            <Button
-                                size='sm'
-                                disabled={busy}
-                                onClick={() =>
-                                    onOpenRevision(
-                                        version.id,
-                                        review?.issues.map((issue) => ({ change: issue.change, keep: issue.keep })).filter((item) => item.change || item.keep)
-                                    )
-                                }>
-                                修一版
-                            </Button>
-                        </div>
-                    ) : undefined
+                description={
+                    version
+                        ? `当前 ${version.label} · ${version.reviewStatus === 'available' ? '已审稿' : version.reviewStatus === 'pending' ? '审稿排队中' : '审稿暂不可用'}`
+                        : '生成后查看本轮结论与优先问题'
                 }>
-                {!version && <p className='text-[11px] text-neutral-500'>生成结果后，这里会显示自动审稿。</p>}
+                {!version && (
+                    <div className='text-wb-muted py-6 text-sm leading-relaxed'>
+                        <p className='text-wb-ink mb-2 font-medium'>还没有审稿</p>
+                        <p>生成结果后，这里会显示自动审稿。你仍可以自行判断作品，并选择基准。</p>
+                    </div>
+                )}
                 {version && !review && (
-                    <div className='rounded border border-neutral-800 bg-neutral-950/40 p-2 text-[11px] text-neutral-400'>
+                    <div className='border-wb-border bg-wb-subtle text-wb-muted rounded-md border p-3 text-sm leading-relaxed'>
                         {version.reviewStatus === 'pending'
                             ? '审稿尚未完成。图片已保存；审稿失败不会重新生成图片。'
-                            : '审稿暂不可用（结构化返回不合格或调用失败）。图片已保留，可稍后人工判断或手动重试审稿。'}
+                            : '审稿暂不可用（结构化返回不合格或调用失败）。图片已保留，可以人工判断。'}
                     </div>
                 )}
                 {review && (
-                    <div className='space-y-2'>
-                        <div className='flex flex-wrap items-center gap-1.5'>
+                    <div className='space-y-4'>
+                        <div className='flex flex-wrap items-center gap-2'>
                             <Badge tone={review.acceptable ? 'green' : 'yellow'}>
                                 {review.acceptable ? '本轮可接受' : '建议修订'}
                             </Badge>
-                            <Badge>{review.mock ? 'Mock 审稿' : review.model}</Badge>
+                            <Badge>{review.model}</Badge>
                         </div>
-                        <p className='text-[11px] leading-relaxed text-neutral-300'>{review.summary}</p>
-
-                        {review.compliant.length > 0 && (
-                            <div>
-                                <p className='text-[10px] font-medium text-neutral-400'>符合的部分</p>
-                                <ul className='mt-0.5 space-y-0.5 text-[11px] text-neutral-400'>
-                                    {review.compliant.map((item, index) => (
-                                        <li key={`${item.aspect}-${index}`}>
-                                            <span className='text-green-300'>{item.aspect}</span>：{item.note}
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
-
+                        <p className='text-wb-ink text-sm leading-relaxed'>{review.summary}</p>
                         {review.issues.length > 0 && (
                             <div>
-                                <p className='text-[10px] font-medium text-neutral-400'>最多两个优先问题</p>
-                                <ul className='mt-1 space-y-1.5'>
-                                    {review.issues.map((issue, index) => {
+                                <h3 className='text-wb-muted mb-2 text-xs font-medium'>优先处理</h3>
+                                <ol className='space-y-3'>
+                                    {review.issues.slice(0, 2).map((issue, index) => {
                                         const meta = ISSUE_LABELS[issue.type];
                                         return (
-                                            <li key={`${issue.aspect}-${index}`} className='rounded border border-neutral-800 bg-neutral-950/40 p-2'>
-                                                <div className='flex flex-wrap items-center gap-1'>
+                                            <li
+                                                key={`${issue.aspect}-${index}`}
+                                                className='border-wb-border border-t pt-3'>
+                                                <div className='mb-2 flex flex-wrap items-center gap-2'>
+                                                    <span className='text-wb-ink text-sm font-semibold'>
+                                                        {index + 1}. {issue.aspect}
+                                                    </span>
                                                     <Badge tone={meta.tone}>{meta.label}</Badge>
-                                                    <Badge>{CONFIDENCE_LABELS[issue.confidence] ?? issue.confidence}</Badge>
-                                                    <span className='text-[11px] font-medium text-neutral-200'>{issue.aspect}</span>
                                                 </div>
-                                                <p className='mt-1 text-[11px] text-neutral-300'>{issue.problem}</p>
-                                                <p className='text-[10px] text-neutral-500'>依据：{issue.evidence}</p>
-                                                {issue.keep && <p className='text-[10px] text-green-300/80'>建议保留：{issue.keep}</p>}
-                                                {issue.change && <p className='text-[10px] text-yellow-200/80'>建议修改：{issue.change}</p>}
+                                                <p className='text-wb-ink text-sm leading-relaxed'>{issue.problem}</p>
+                                                <details className='mt-2'>
+                                                    <summary className='text-wb-accent cursor-pointer text-xs'>
+                                                        查看依据与修改建议
+                                                    </summary>
+                                                    <div className='text-wb-muted mt-2 space-y-2 text-xs leading-relaxed'>
+                                                        <Badge>
+                                                            {CONFIDENCE_LABELS[issue.confidence] ?? issue.confidence}
+                                                        </Badge>
+                                                        <p>依据：{issue.evidence}</p>
+                                                        {issue.keep && (
+                                                            <p>
+                                                                <span className='text-wb-success font-medium'>
+                                                                    建议保留：
+                                                                </span>
+                                                                {issue.keep}
+                                                            </p>
+                                                        )}
+                                                        {issue.change && (
+                                                            <p>
+                                                                <span className='text-wb-warning font-medium'>
+                                                                    建议修改：
+                                                                </span>
+                                                                {issue.change}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </details>
                                             </li>
                                         );
                                     })}
-                                </ul>
+                                </ol>
                             </div>
                         )}
-
+                        {(review.compliant.length > 0 || review.issues.length > 2) && (
+                            <details className='border-wb-border border-t pt-3'>
+                                <summary className='text-wb-muted cursor-pointer text-xs'>查看其余审稿细节</summary>
+                                <div className='text-wb-muted mt-3 space-y-3 text-xs leading-relaxed'>
+                                    {review.compliant.length > 0 && (
+                                        <div>
+                                            <p className='text-wb-ink mb-1 font-medium'>符合的部分</p>
+                                            <ul className='space-y-1'>
+                                                {review.compliant.map((item, index) => (
+                                                    <li key={`${item.aspect}-${index}`}>
+                                                        <span className='text-wb-success'>{item.aspect}</span>：
+                                                        {item.note}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {review.issues.slice(2).map((issue, index) => (
+                                        <div key={`${issue.aspect}-${index}`}>
+                                            <p className='text-wb-ink font-medium'>
+                                                {issue.aspect} · {ISSUE_LABELS[issue.type].label}
+                                            </p>
+                                            <p>{issue.problem}</p>
+                                            <p>依据：{issue.evidence}</p>
+                                            {issue.keep && <p>建议保留：{issue.keep}</p>}
+                                            {issue.change && <p>建议修改：{issue.change}</p>}
+                                        </div>
+                                    ))}
+                                </div>
+                            </details>
+                        )}
                         {batchComparison && (
-                            <div className='rounded border border-blue-700/40 bg-blue-950/20 p-2'>
-                                <p className='text-[10px] font-medium text-blue-200'>两张比较与推荐</p>
-                                <p className='mt-0.5 text-[11px] text-blue-100/80'>
+                            <div className='border-wb-border bg-wb-accent-soft rounded-md border p-3'>
+                                <p className='text-wb-accent text-xs font-medium'>两张比较与推荐</p>
+                                <p className='text-wb-ink mt-2 text-sm leading-relaxed'>
                                     推荐 {batchComparison.recommendedLabel}：{batchComparison.reason}
                                 </p>
-                                <p className='mt-1 text-[10px] text-blue-200/60'>AI 推荐不会自动设为基准；请人工选择。</p>
+                                <p className='text-wb-muted mt-2 text-xs'>AI 推荐不会自动设为基准，请人工选择。</p>
                             </div>
                         )}
                     </div>
                 )}
+                {version && (
+                    <div className='border-wb-border flex flex-wrap gap-2 border-t pt-3'>
+                        {!version.isBaseline && (
+                            <Button
+                                size='sm'
+                                variant='outline'
+                                className='h-9'
+                                disabled={busy || localBusy}
+                                onClick={() => void setBaseline()}>
+                                设为基准
+                            </Button>
+                        )}
+                        <Button
+                            size='sm'
+                            variant='outline'
+                            className='h-9'
+                            disabled={busy}
+                            onClick={() =>
+                                onOpenRevision(
+                                    version.id,
+                                    review?.issues
+                                        .map((issue) => ({ change: issue.change, keep: issue.keep }))
+                                        .filter((item) => item.change || item.keep)
+                                )
+                            }>
+                            修一版
+                        </Button>
+                    </div>
+                )}
             </Section>
-
-            <Section title='本次快照' description='确认后的不可变记录；后续改草稿不影响已排队任务。'>
+            <Section title='本次快照' description='确认后的记录，后续草稿修改不会改变它。'>
                 {latestRun ? (
-                    <div className='space-y-1 text-[10px] text-neutral-400'>
-                        <p>操作：{latestRun.action} · 状态：{latestRun.status}</p>
-                        <p>模型：{latestRun.snapshot.params.model} · {latestRun.snapshot.params.size} · {latestRun.snapshot.params.quality}</p>
-                        <p>图片：{latestRun.snapshot.params.imageCount} 张 · 审稿：{latestRun.snapshot.review.enabled ? '是' : '否'}（{latestRun.snapshot.review.model}）</p>
-                        <p>参考顺序：{latestRun.snapshot.references.length > 0 ? latestRun.snapshot.references.map((ref) => `${ref.position + 1}.${ref.purpose}`).join(' / ') : '无'}</p>
-                        <p>估算：图片 ${latestRun.snapshot.estimate.estimatedImageUsd === null ? '未知' : latestRun.snapshot.estimate.estimatedImageUsd.toFixed(4)} · 审稿费用未知</p>
-                        <p>锁定项：{latestRun.snapshot.lockedFields.length > 0 ? latestRun.snapshot.lockedFields.join('、') : '无'}</p>
+                    <div className='text-wb-muted space-y-3 text-xs leading-relaxed'>
+                        <div className='flex flex-wrap items-center gap-2'>
+                            <RunStatusBadge status={latestRun.status} />
+                            <span>{latestRun.snapshot.params.imageCount} 张 · 真实调用</span>
+                        </div>
+                        <p className='text-wb-ink text-sm'>
+                            图片估算 $
+                            {latestRun.snapshot.estimate.estimatedImageUsd === null
+                                ? '未知'
+                                : latestRun.snapshot.estimate.estimatedImageUsd.toFixed(4)}{' '}
+                            · 审稿费用未知
+                        </p>
                         <details>
-                            <summary className='cursor-pointer text-neutral-500'>查看提示词快照</summary>
-                            <pre className='mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-neutral-950 p-2 text-[10px] text-neutral-400'>
-                                {latestRun.snapshot.prompt}
-                            </pre>
+                            <summary className='text-wb-accent cursor-pointer'>查看模型、参数与提示词</summary>
+                            <div className='mt-3 space-y-2'>
+                                <p>
+                                    模型：{latestRun.snapshot.params.model} · {latestRun.snapshot.params.size} ·{' '}
+                                    {latestRun.snapshot.params.quality}
+                                </p>
+                                <p>
+                                    审稿：{latestRun.snapshot.review.enabled ? '是' : '否'}（
+                                    {latestRun.snapshot.review.model}）
+                                </p>
+                                <p>
+                                    参考顺序：
+                                    {latestRun.snapshot.references.length > 0
+                                        ? latestRun.snapshot.references
+                                              .map(
+                                                  (ref) =>
+                                                      `${ref.position + 1}.${REFERENCE_PURPOSE_LABELS[ref.purpose]}`
+                                              )
+                                              .join(' / ')
+                                        : '无'}
+                                </p>
+                                <p>
+                                    锁定项：
+                                    {latestRun.snapshot.lockedFields.length > 0
+                                        ? latestRun.snapshot.lockedFields
+                                              .map((field) => DESIGN_FIELD_LABELS[field])
+                                              .join('、')
+                                        : '无'}
+                                </p>
+                                <pre className='bg-wb-subtle text-wb-ink max-h-80 overflow-auto rounded-md p-3 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap'>
+                                    {latestRun.snapshot.prompt}
+                                </pre>
+                            </div>
                         </details>
                     </div>
                 ) : (
-                    <p className='text-[11px] text-neutral-500'>还没有已确认快照。</p>
+                    <p className='text-wb-muted text-sm'>还没有已确认快照。</p>
                 )}
             </Section>
         </div>

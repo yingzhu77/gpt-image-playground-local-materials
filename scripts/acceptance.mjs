@@ -130,6 +130,14 @@ function serverConfig(name, port, env, output) {
             NODE_ENV: 'development',
             OPENAI_API_KEY: '',
             OPENAI_API_BASE_URL: '',
+            WORKBENCH_MOCK: '',
+            WORKBENCH_TEST_FIXTURES: '',
+            WORKBENCH_TEST_STRICT_AUTHORIZATION: '',
+            IMAGE_API_MOCK_FIXTURE_DIR: '',
+            IMAGE_API_TEST_FIXTURE_DIR: '',
+            IMAGE_API_TEST_SCENARIO_FILE: '',
+            IMAGE_API_TEST_LOG: '',
+            IMAGE_API_TEST_UNIQUE: '',
             APP_PASSWORD: '',
             NEXT_PUBLIC_IMAGE_STORAGE_MODE: 'fs',
             NEXT_TELEMETRY_DISABLED: '1',
@@ -320,7 +328,9 @@ async function filesInTree(root, extension) {
 }
 
 async function scanClientBundleForSecrets() {
-    const staticDir = path.join(repoRoot, '.next', 'static');
+    const distDir = path.join(repoRoot, process.env.NEXT_DIST_DIR || '.next');
+    const staticDir = fsSync.existsSync(path.join(distDir, 'dev', 'static'))
+        ? path.join(distDir, 'dev', 'static') : path.join(distDir, 'static');
     const files = await filesInTree(staticDir, '.js');
     const needles = ['process.env.OPENAI_API_KEY', 'Authorization: Bearer', 'sk-proj-', 'sk-svcacct-'];
     const hits = [];
@@ -342,9 +352,12 @@ async function main() {
         await findFreePort(3100),
         {
             ENABLE_IMAGE_API: 'true',
-            IMAGE_API_MOCK_FIXTURE_DIR: fixtureDir,
-            IMAGE_API_MOCK_SCENARIO_FILE: scenarioFile,
-            IMAGE_API_MOCK_LOG: mockLog,
+            WORKBENCH_TEST_FIXTURES: '1',
+            WORKBENCH_TEST_STRICT_AUTHORIZATION: '1',
+            WORKBENCH_DATA_DIR: path.join(artifactsDir, 'legacy-fixture-data'),
+            IMAGE_API_TEST_FIXTURE_DIR: fixtureDir,
+            IMAGE_API_TEST_SCENARIO_FILE: scenarioFile,
+            IMAGE_API_TEST_LOG: mockLog,
             IMAGE_OUTPUT_DIR: outputDir
         },
         outputDir
@@ -354,9 +367,9 @@ async function main() {
         await findFreePort(3110),
         {
             ENABLE_IMAGE_API: 'false',
-            IMAGE_API_MOCK_FIXTURE_DIR: '',
-            IMAGE_API_MOCK_SCENARIO_FILE: '',
-            IMAGE_API_MOCK_LOG: '',
+            IMAGE_API_TEST_FIXTURE_DIR: '',
+            IMAGE_API_TEST_SCENARIO_FILE: '',
+            IMAGE_API_TEST_LOG: '',
             IMAGE_OUTPUT_DIR: path.join(artifactsDir, 'disabled-images')
         },
         path.join(artifactsDir, 'disabled-images')
@@ -366,9 +379,9 @@ async function main() {
         await findFreePort(3120),
         {
             ENABLE_IMAGE_API: 'true',
-            IMAGE_API_MOCK_FIXTURE_DIR: '',
-            IMAGE_API_MOCK_SCENARIO_FILE: '',
-            IMAGE_API_MOCK_LOG: '',
+            IMAGE_API_TEST_FIXTURE_DIR: '',
+            IMAGE_API_TEST_SCENARIO_FILE: '',
+            IMAGE_API_TEST_LOG: '',
             IMAGE_OUTPUT_DIR: path.join(artifactsDir, 'key-missing-images')
         },
         path.join(artifactsDir, 'key-missing-images')
@@ -720,7 +733,7 @@ async function main() {
             const authStatus = await (await fetch(`${disabledSession.url}/api/auth-status`)).json();
             check('disabled auth status reports api disabled', authStatus.imageApiEnabled === false);
             check('disabled auth status reports missing key', authStatus.apiKeyConfigured === false);
-            check('disabled auth status reports not mock', authStatus.imageApiMock === false);
+            check('auth status has no retired mock mode flag', !('imageApiMock' in authStatus));
 
             const mockLogBeforeDisabled = (await readMockLog()).length;
             response = await postImages(disabledSession.url, { prompt: 'disabled gate test' });

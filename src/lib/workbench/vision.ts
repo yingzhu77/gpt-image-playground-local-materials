@@ -1,7 +1,7 @@
-import { getAnalysisModel, getReviewModel, isWorkbenchMock } from '@/lib/workbench/config';
+import { getAnalysisModel, getReviewModel, isWorkbenchFixtureTest } from '@/lib/workbench/config';
 import { analysisPreview, assetCacheKey, generatedPreview } from '@/lib/workbench/assets';
 import { callStructuredJson } from '@/lib/workbench/llm';
-import { mockAnalyzeAsset, mockReview } from '@/lib/workbench/mock';
+import { fixtureAnalyzeAsset, fixtureReview } from '@/lib/workbench/test-fixtures';
 import { ANALYSIS_SCHEMA, parseAnalysis, parseReview, REVIEW_SCHEMA } from '@/lib/workbench/schema';
 import { getAssetAnalysis, setAssetAnalysis } from '@/lib/workbench/store';
 import type { AssetAnalysis, AssetMeta, DesignCard, DesignFieldKey, ReviewResult } from '@/lib/workbench/types';
@@ -32,13 +32,14 @@ export async function analyzeReference(input: {
     asset: AssetMeta;
     mock: boolean;
 }): Promise<AssetAnalysis> {
-    const model = isWorkbenchMock() || input.mock ? 'mock-analysis' : getAnalysisModel();
+    if ((input.mock || input.asset.mock) && !isWorkbenchFixtureTest()) throw new Error('历史测试素材不能发送到真实视觉模型。');
+    const model = isWorkbenchFixtureTest() ? 'mock-analysis' : getAnalysisModel();
     const cacheKey = assetCacheKey(input.asset, model);
     const cached = getAssetAnalysis(input.asset.id, cacheKey, { ignoreManual: true });
     if (cached) return cached;
 
-    if (isWorkbenchMock() || input.mock) {
-        const analysis = await mockAnalyzeAsset(input.asset);
+    if (isWorkbenchFixtureTest()) {
+        const analysis = await fixtureAnalyzeAsset(input.asset);
         setAssetAnalysis(input.asset.id, cacheKey, analysis);
         return analysis;
     }
@@ -72,11 +73,12 @@ export async function reviewImages(input: {
     acceptance: string;
     mock: boolean;
 }): Promise<ReviewResult> {
+    if ((input.mock || input.generated.some((item) => item.asset.mock) || input.references.some((asset) => asset.mock)) && !isWorkbenchFixtureTest()) throw new Error('历史测试结果不能发送到真实审稿模型。');
     const target = input.generated[input.generated.length - 1];
     if (!target) throw new Error('REVIEW_TARGET_MISSING');
 
-    if (isWorkbenchMock() || input.mock) {
-        const review = await mockReview({
+    if (isWorkbenchFixtureTest()) {
+        const review = await fixtureReview({
             label: target.label,
             secondLabel: input.generated.length > 1 ? input.generated[1].label : undefined,
             design: input.design
