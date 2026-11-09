@@ -1,6 +1,7 @@
 'use client';
 
 import { ImageOptions } from '@/components/image-options';
+import { MarkupEditor } from '@/components/markup-editor';
 import { ModeToggle } from '@/components/mode-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,6 +12,9 @@ import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import {
     GPT_IMAGE_MODELS,
+    supportsComplexity,
+    supportsMarkup,
+    type ImageComplexity,
     type GptImageModel,
     type ImageBackground,
     type ImageModeration,
@@ -35,12 +39,14 @@ export type EditingFormData = {
     customWidth: number;
     customHeight: number;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     output_format: ImageOutputFormat;
     output_compression?: number;
     background: ImageBackground;
     moderation: ImageModeration;
     imageFiles: File[];
     maskFile: File | null;
+    markupFile: File | null;
     model: GptImageModel;
 };
 
@@ -188,9 +194,13 @@ export function EditingForm({
     editMaskPreviewUrl,
     setEditMaskPreviewUrl
 }: EditingFormProps) {
+    const [markupMode, setMarkupMode] = React.useState(false);
+    const [markupFile, setMarkupFile] = React.useState<File | null>(null);
+    const [markupBase, setMarkupBase] = React.useState<File | undefined>(undefined);
     const [firstImagePreviewUrl, setFirstImagePreviewUrl] = React.useState<string | null>(null);
     const [isOptimizingUploads, setIsOptimizingUploads] = React.useState(false);
 
+    const [complexity, setComplexity] = React.useState<ImageComplexity>('high');
     const showCompression = editOutputFormat === 'jpeg' || editOutputFormat === 'webp';
     const customSizeValidation =
         editSize === 'custom' ? validateCustomSize(editCustomWidth, editCustomHeight) : { valid: true as const };
@@ -494,6 +504,10 @@ export function EditingForm({
             alert('Please save the mask you have drawn before submitting.');
             return;
         }
+        if (markupMode && (!markupFile || markupBase !== imageFiles[0])) {
+            alert('请先绘制并保存标注。');
+            return;
+        }
         if (customSizeInvalid) {
             return;
         }
@@ -505,11 +519,13 @@ export function EditingForm({
             customWidth: editCustomWidth,
             customHeight: editCustomHeight,
             quality: editQuality,
+            ...(supportsComplexity(editModel) ? { complexity } : {}),
             output_format: editOutputFormat,
             background: editBackground,
             moderation: editModeration,
             imageFiles: imageFiles,
-            maskFile: editGeneratedMaskFile,
+            maskFile: markupMode ? null : editGeneratedMaskFile,
+            markupFile: markupMode ? markupFile : null,
             model: editModel
         };
         if (showCompression) {
@@ -555,7 +571,13 @@ export function EditingForm({
                         </Label>
                         <Select
                             value={editModel}
-                            onValueChange={(value) => setEditModel(value as GptImageModel)}
+                            onValueChange={(value) => {
+                                setEditModel(value as GptImageModel);
+                                if (!supportsMarkup(value as GptImageModel)) {
+                                    setMarkupMode(false);
+                                    setMarkupFile(null);
+                                }
+                            }}
                             disabled={isLoading}>
                             <SelectTrigger
                                 id='edit-model-select'
@@ -625,6 +647,9 @@ export function EditingForm({
                             <div className='flex space-x-2 overflow-x-auto pt-2'>
                                 {sourceImagePreviewUrls.map((url, index) => (
                                     <div key={url} className='relative shrink-0'>
+                                        <span className='text-xs text-white'>
+                                            {index === 0 ? '1. 底图' : index + 1 + '. 参考图'}
+                                        </span>
                                         <Image
                                             src={url}
                                             alt={`Source preview ${index + 1}`}
@@ -648,7 +673,40 @@ export function EditingForm({
                         )}
                     </div>
 
-                    <div className='space-y-3'>
+                    <div className='space-y-2'>
+                        <label className='text-white'>
+                            <input
+                                type='checkbox'
+                                checked={markupMode}
+                                disabled={isLoading || !supportsMarkup(editModel)}
+                                onChange={(e) => {
+                                    setMarkupMode(e.target.checked);
+                                    setMarkupFile(null);
+                                    setEditGeneratedMaskFile(null);
+                                    setEditShowMaskEditor(false);
+                                }}
+                            />{' '}
+                            图上标注编辑
+                        </label>
+                        {markupMode && firstImagePreviewUrl && editOriginalImageSize && (
+                            <MarkupEditor
+                                key={firstImagePreviewUrl}
+                                src={firstImagePreviewUrl}
+                                width={editOriginalImageSize.width}
+                                height={editOriginalImageSize.height}
+                                onChange={(file) => {
+                                    setMarkupBase(imageFiles[0]);
+                                    setMarkupFile(file);
+                                }}
+                            />
+                        )}
+                        {markupMode && (
+                            <p className='text-xs text-white/60'>
+                                {markupFile && markupBase === imageFiles[0] ? '标注已保存' : '请绘制并保存标注'}
+                            </p>
+                        )}
+                    </div>
+                    <div className={markupMode ? 'hidden' : 'space-y-3'}>
                         <Label className='block text-white'>Mask</Label>
                         <Button
                             type='button'
@@ -793,6 +851,22 @@ export function EditingForm({
 
                     <p className='text-sm text-white/60'>张数：1（本轮固定单张）</p>
 
+                    {supportsComplexity(editModel) && (
+                        <div className='space-y-1'>
+                            <Label className='text-white'>Complexity（生成前规划投入）</Label>
+                            <select
+                                aria-label='Complexity'
+                                value={complexity}
+                                onChange={(e) => setComplexity(e.target.value as ImageComplexity)}
+                                disabled={isLoading}
+                                className='block rounded border border-white/20 bg-black p-2 text-white'>
+                                <option value='low'>Low</option>
+                                <option value='medium'>Medium</option>
+                                <option value='high'>High</option>
+                            </select>
+                            <p className='text-xs text-white/60'>控制生成前的规划投入，与渲染质量独立。</p>
+                        </div>
+                    )}
                     <ImageOptions
                         idPrefix='edit'
                         model={editModel}

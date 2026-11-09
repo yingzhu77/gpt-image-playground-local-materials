@@ -1,5 +1,7 @@
 # 本地素材版部署与使用说明（Windows）
 
+> 2026-11-05 更新：默认模型为 GPT Image 2.6 Sunburst，质量默认为 high；2.6 可独立设置 complexity，编辑页支持独立透明标注。请求仍先确认，SDK 不自动重试。历史记录可查看输入顺序和修改前后；实际出图与账号权限尚待用户确认后验证。2.6 的完整自定义尺寸上限未在当前官方文档中明确列出，应用暂沿用原有范围校验，不能视为官方 2.6 完整限制。
+
 本文对应本项目默认分支 `main`（功能分支 `feat/local-materials-v1` 保留）。目标是用于插画、视频封面、MV 背景和透明 PNG 素材：默认低成本、确认后提交、保留 API 原始字节，并为每次请求写本地 JSON 元数据。
 
 ## 1. 当前环境与仓库
@@ -22,13 +24,19 @@ Mock 验收使用服务端 SDK 边界的本地 fixture client，不会发送真�
 gpt-image-playground/
 ├─ .env.local                 本地私密配置（已被 git 忽略，不要提交）
 ├─ .env.local.example         可提交的配置模板（不含真实密钥）
-├─ start-local.cmd            Windows 启动入口
+├─ start-local.cmd            Windows 启动入口（Web + 工作台 worker）
 ├─ scripts/
-│  ├─ start-local.mjs         选择端口并启动 Next.js 开发服务器
-│  └─ acceptance.mjs          无真实 API 的 mock 验收
+│  ├─ start-local.mjs         选择端口并启动 Next.js 与 worker
+│  ├─ workbench-worker.mjs    工作台独立 worker（轮询内部 tick 接口）
+│  ├─ acceptance.mjs          旧入口的无真实 API mock 验收
+│  ├─ workbench-acceptance.mjs 工作台全流程与故障注入验收
+│  └─ workbench-fetcher-test.mts 下载安全单元测试
 ├─ docs/LOCAL_SETUP.zh-CN.md  本文件
-├─ generated-images/          运行后生成的原图（git 忽略）
+├─ docs/WORKBENCH.zh-CN.md    工作台说明、配置、状态与参考来源
+├─ generated-images/          旧入口生成的原图（git 忽略）
 │  └─ metadata/               每次请求的 JSON 元数据（git 忽略）
+├─ .workbench-data/           工作台 SQLite、素材与 worker token（git 忽略）
+│  └─ mock/                   Mock 模式隔离数据目录（git 忽略）
 └─ test-artifacts/            mock 验收的 fixture、日志与测试图片（git 忽略）
 ```
 
@@ -352,3 +360,14 @@ npm run test:acceptance
 
 **图片显示 404**
 ：确认图片文件在 `generated-images/`（或当前 `IMAGE_OUTPUT_DIR` 指向的目录），且文件名没有子路径。元数据位于 `metadata/` 子目录，不会通过图片 URL 暴露。
+
+## 14. 创作工作台（V1）
+
+工作台入口为 `/workbench`，旧入口 `/` 与现有历史/参数保持原样。两者共用同一套服务端生图/编辑客户端、模型参数校验、Key 与代理配置；工作台的项目、参考组、快照、版本和任务状态保存在 `.workbench-data/workbench.sqlite` 与 `.workbench-data/assets/`。
+
+- 启动：`start-local.cmd` / `node scripts/start-local.mjs` 会同时启动 Web 与 `scripts/workbench-worker.mjs`。只运行 `npm run dev` 时页面可用，但任务会停留在排队状态。
+- 隔离 Mock：`WORKBENCH_MOCK=1` 时规划/分析/审稿/搜图使用本地夹具，数据自动写入 `.workbench-data/mock/`；生图仍使用 `IMAGE_API_MOCK_FIXTURE_DIR`，不会回退真实网络。
+- 真实调用：需要 `ENABLE_IMAGE_API=true` 与服务端 Key；工作台在提交生图前显示模型、参数、1/2 张、预算、审稿次数与费用不确定性，必须由你确认。审稿/规划的文本模型价格未配置，费用显示未知。
+- 任务恢复：worker 重启会把遗留的“已发送处理中”步骤标记为未知并暂停，不会自动重发；已完成步骤不会重跑。停止只阻止后续步骤，晚到的成功结果仍保存。
+- 数据备份/恢复：停止服务后整体复制 `.workbench-data/`（含 `-wal`/`-shm`）；恢复时放回同一路径。SQLite 使用 Node 内置 `node:sqlite`，需要 Node 22.5+（当前 22.23.4 已验证，仍有实验特性警告）。
+- 验收：`npm run test:workbench` 在隔离目录运行全流程与故障注入；`node --experimental-strip-types scripts/workbench-fetcher-test.mts` 验证 SSRF/下载安全。详见 [WORKBENCH.zh-CN.md](WORKBENCH.zh-CN.md)。

@@ -1,10 +1,12 @@
 # <img src="./public/favicon.svg" alt="Project Logo" width="30" height="30" style="vertical-align: middle; margin-right: 8px;"> GPT Image Playground
 
-A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, and `gpt-image-2`) for generating and editing images.
+A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, and `gpt-image-2`) for generating and editing images.
 
 > **Local materials fork:** This repository is derived from [alasano/gpt-image-playground](https://github.com/alasano/gpt-image-playground) under the MIT license. It adds a server-side API gate, preflight confirmation, 16:9 size presets, transparent PNG handling, original-byte plus JSON metadata archival, and proxy-aware timeout diagnostics. See [docs/LOCAL_SETUP.zh-CN.md](docs/LOCAL_SETUP.zh-CN.md) for the local workflow.
 
-> **Note:** The playground defaults to `gpt-image-2.5-flare`, OpenAI's fast default model. All three models support arbitrary resolutions up to 4K (with constraint validation) and transparent backgrounds (preview on `gpt-image-2`). The `gpt-image-2.5` models add the `xhigh` and `max` quality tiers. Retired models (`gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`) can no longer be selected, but images generated with them remain visible in the history with their original cost breakdown.
+> **Creative Workbench V1:** `/workbench` adds editable design cards, reference-role bindings, real web image search with safe imports, confirmed 1–2 image batches, automatic review, one-step revisions, parent/child versions, baseline comparison, and original-byte downloads. It runs beside the original quick playground (`/`) and shares the same image API client, model parameters and server-side credentials. Planning/analysis/review/search default to `gpt-6.1-sol`; planning model and reasoning effort (`low`–`max`, default `medium`) are switchable in the UI. Start everything with `node scripts/start-local.mjs` (web + worker), then use the mode badge in the header to switch between Mock and real mode (the launcher restarts both safely). See [docs/WORKBENCH.zh-CN.md](docs/WORKBENCH.zh-CN.md). Mock mode is isolated under `.workbench-data/mock` and never calls the real API.
+
+> **Note:** The playground defaults to `gpt-image-2.6-sunburst`; `gpt-image-2.6-flare` is available for faster trials. The app retains its existing custom-resolution validation; OpenAI’s currently published full edge and pixel limits explicitly describe GPT Image 2 and 2.5, so the 2.6 limits still need confirmation. The `gpt-image-2.5` and `gpt-image-2.6` models support the `xhigh` and `max` quality tiers. Retired models (`gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`) can no longer be selected, but images generated with them remain visible in the history with their original cost breakdown.
 
 <p align="center">
   <img src="./readme-images/interface.jpg" alt="Interface" width="900"/>
@@ -148,11 +150,13 @@ npm install
 
 ### 3. Run the Development Server 🟢
 
-On Windows, double-click `start-local.cmd` (or run `node scripts/start-local.mjs`). It binds to `127.0.0.1`, prefers port `3000`, and prints the actual URL if `3000` is occupied.
+On Windows, double-click `start-local.cmd` (or run `node scripts/start-local.mjs`). It binds to `127.0.0.1`, prefers port `3000`, prints the actual URL if `3000` is occupied, and starts both the Next.js server and the Creative Workbench worker. Open `/` for the quick playground and `/workbench` for the workbench.
 
 ```bash
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
+
+The bare `npm run dev` command starts only the web server; workbench tasks will stay queued until a worker is running (`npm run workbench:worker` in a second terminal).
 
 ### 4. Open the Playground 🟢
 

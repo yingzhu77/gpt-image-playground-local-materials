@@ -1,5 +1,6 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
 import {
     Dialog,
     DialogContent,
@@ -8,7 +9,6 @@ import {
     DialogHeader,
     DialogTitle
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
 import type { RequestSnapshot } from '@/lib/request-types';
 import { Loader2 } from 'lucide-react';
 
@@ -77,6 +77,12 @@ export function RequestConfirmationDialog({
                             <div>
                                 <dt className='text-neutral-500'>质量</dt>
                                 <dd>{request.quality}</dd>
+                                {request.complexity && (
+                                    <>
+                                        <dt>Complexity（规划投入）</dt>
+                                        <dd>{request.complexity}</dd>
+                                    </>
+                                )}
                             </div>
                             <div>
                                 <dt className='text-neutral-500'>张数</dt>
@@ -117,7 +123,11 @@ export function RequestConfirmationDialog({
                                 )}
                                 <p>
                                     <span className='text-neutral-500'>遮罩：</span>
-                                    {request.mask ? `有（${request.mask.name}）` : '无'}
+                                    {request.markup
+                                        ? `标注（${request.markup.name}）`
+                                        : request.mask
+                                          ? `蒙版（${request.mask.name}）`
+                                          : '无'}
                                 </p>
                             </div>
                         )}

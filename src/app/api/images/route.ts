@@ -5,6 +5,9 @@ import {
     IMAGE_OUTPUT_FORMATS,
     isGptImageModel,
     supportsExtendedQuality,
+    supportsComplexity,
+    supportsMarkup,
+    type ImageComplexity,
     type GptImageModel,
     type ImageBackground,
     type ImageModeration,
@@ -33,6 +36,7 @@ import { validateCustomSize } from '@/lib/size-utils';
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import type OpenAI from 'openai';
+import sharp from 'sharp';
 
 export const runtime = 'nodejs';
 
@@ -63,12 +67,14 @@ type ParsedImageRequest = {
     model: GptImageModel;
     size: string;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     background: ImageBackground;
     outputFormat: ImageOutputFormat;
     outputCompression?: number;
     moderation: ImageModeration;
     imageFiles: File[];
     maskFile: File | null;
+    markupFile: File | null;
 };
 
 const IMAGE_BACKGROUNDS: readonly ImageBackground[] = ['auto', 'opaque', 'transparent'];
@@ -161,6 +167,7 @@ export async function POST(request: NextRequest) {
             n: 1,
             size: parsed.size,
             quality: parsed.quality,
+            ...(parsed.complexity ? { complexity: parsed.complexity } : {}),
             background: parsed.background,
             output_format: parsed.outputFormat,
             moderation: parsed.moderation,
@@ -176,7 +183,8 @@ export async function POST(request: NextRequest) {
                       prompt: parsed.prompt,
                       image: parsed.imageFiles,
                       ...imageParams,
-                      ...(parsed.maskFile ? { mask: parsed.maskFile } : {})
+                      ...(parsed.maskFile ? { mask: parsed.maskFile } : {}),
+                      ...(parsed.markupFile ? { markup: parsed.markupFile } : {})
                   } satisfies ImageEditParams);
 
         openaiRequestId = apiResult.openaiRequestId;
@@ -268,6 +276,17 @@ export async function POST(request: NextRequest) {
         phase = 'metadata';
         if (storageMode === 'fs') {
             try {
+                const archivedInputs = [];
+                for (let i = 0; i < parsed.imageFiles.length; i++) {
+                    const file = parsed.imageFiles[i];
+                    const ext = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+                    const filename = 'input-' + requestId + '-' + i + '.' + ext;
+                    await writeImageFile(filename, Buffer.from(await file.arrayBuffer()));
+                    archivedInputs.push(filename);
+                }
+                const markupArchive = parsed.markupFile ? 'markup-' + requestId + '.png' : null;
+                if (parsed.markupFile && markupArchive)
+                    await writeImageFile(markupArchive, Buffer.from(await parsed.markupFile.arrayBuffer()));
                 const metadata = buildImageMetadata({
                     localRequestId: requestId,
                     createdAt: new Date().toISOString(),
@@ -276,12 +295,15 @@ export async function POST(request: NextRequest) {
                     model: parsed.model,
                     size: parsed.size,
                     quality: parsed.quality,
+                    complexity: parsed.complexity,
                     n: 1,
                     background: parsed.background,
                     outputFormat: parsed.outputFormat,
                     outputCompression: parsed.outputCompression,
                     moderation: parsed.moderation,
                     referenceImages: toArchivedReferences(parsed.imageFiles),
+                    archivedInputs,
+                    markupArchive,
                     mask: parsed.maskFile ? { filename: parsed.maskFile.name, sizeBytes: parsed.maskFile.size } : null,
                     images: outputs,
                     usage,
@@ -435,6 +457,14 @@ async function parseImageRequest(formData: FormData): Promise<ParsedImageRequest
         throw new RequestValidationError('INVALID_QUALITY', `${model} 不支持 ${qualityRaw} 质量档位。`);
     }
 
+    const complexityRaw = formData.get('complexity');
+    if (
+        complexityRaw !== null &&
+        (!supportsComplexity(model) || !['low', 'medium', 'high'].includes(String(complexityRaw)))
+    ) {
+        throw new RequestValidationError('INVALID_COMPLEXITY', '当前模型不支持该规划投入参数。');
+    }
+
     const backgroundRaw = (formData.get('background') as ImageBackground | null) ?? 'auto';
     if (!IMAGE_BACKGROUNDS.includes(backgroundRaw)) {
         throw new RequestValidationError('INVALID_BACKGROUND', `不支持的背景参数：${String(backgroundRaw)}。`);
@@ -493,18 +523,55 @@ async function parseImageRequest(formData: FormData): Promise<ParsedImageRequest
         await validateMask(maskFile, imageFiles[0]);
     }
 
+    const markupValue = formData.get('markup');
+    if (markupValue instanceof File && (mode !== 'edit' || !supportsMarkup(model) || maskFile))
+        throw new RequestValidationError('INVALID_MARKUP', '标注只支持 2.5 / 2.6 编辑，且不能与蒙版同时使用。');
+    const markupFile = markupValue instanceof File ? markupValue : null;
+    if (markupFile) {
+        if (markupFile.size > 50 * 1024 * 1024)
+            throw new RequestValidationError('INVALID_MARKUP', '标注文件超过 50 MB。');
+        try {
+            const data = Buffer.from(await markupFile.arrayBuffer());
+            const overlay = sharp(data, { limitInputPixels: 16777216 });
+            const info = await overlay.metadata();
+            const source = await sharp(Buffer.from(await imageFiles[0].arrayBuffer()), {
+                limitInputPixels: 16777216
+            }).metadata();
+            const oriented = source.autoOrient;
+            if (!oriented || oriented.width * oriented.height > 16777216)
+                throw new Error('底图不得超过 16,777,216 像素。');
+            if (
+                info.format !== 'png' ||
+                !info.hasAlpha ||
+                !oriented ||
+                info.width !== oriented.width ||
+                info.height !== oriented.height
+            )
+                throw new Error('标注必须是与底图方向调整后尺寸一致的透明 PNG。');
+            const stats = await overlay.stats();
+            if (stats.channels[stats.channels.length - 1].min === 255) throw new Error('标注 PNG 必须含透明像素。');
+        } catch (error) {
+            throw new RequestValidationError(
+                'INVALID_MARKUP',
+                error instanceof Error ? error.message : '标注文件无效。'
+            );
+        }
+    }
+
     return {
         mode,
         prompt: promptRaw,
         model,
         size: sizeRaw,
         quality: qualityRaw,
+        complexity: (complexityRaw as ImageComplexity | null) ?? undefined,
         background: backgroundRaw,
         outputFormat,
         outputCompression,
         moderation: moderationRaw,
         imageFiles,
-        maskFile
+        maskFile,
+        markupFile
     };
 }
 

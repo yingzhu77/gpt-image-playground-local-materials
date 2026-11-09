@@ -1,5 +1,6 @@
 import type {
     GptImageModel,
+    ImageComplexity,
     ImageBackground,
     ImageModeration,
     ImageOutputFormat,
@@ -17,6 +18,7 @@ export type RequestSnapshot = {
     model: GptImageModel;
     size: string;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     n: 1;
     background: ImageBackground;
     output_format: ImageOutputFormat;
@@ -24,4 +26,5 @@ export type RequestSnapshot = {
     moderation: ImageModeration;
     referenceImages: RequestReferenceImage[];
     mask: RequestReferenceImage | null;
+    markup: RequestReferenceImage | null;
 };

@@ -28,6 +28,8 @@ const CURRENT_MODEL_RATES: ModelRates = { textInputPerMillion: 5, imageInputPerM
 
 // Retired models keep their rows so stored history entries still show the cost breakdown they were billed at.
 const MODEL_RATES: Record<HistoryGptImageModel, ModelRates> = {
+    'gpt-image-2.6-flare': CURRENT_MODEL_RATES,
+    'gpt-image-2.6-sunburst': CURRENT_MODEL_RATES,
     'gpt-image-2.5-flare': CURRENT_MODEL_RATES,
     'gpt-image-2.5-sunburst': CURRENT_MODEL_RATES,
     'gpt-image-2': CURRENT_MODEL_RATES,

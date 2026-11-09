@@ -15,6 +15,7 @@ import {
     DEFAULT_GPT_IMAGE_MODEL,
     MAX_EDIT_IMAGES,
     type HistoryGptImageModel,
+    type ImageComplexity,
     type ImageBackground,
     type ImageModeration,
     type ImageOutputFormat,
@@ -23,6 +24,7 @@ import {
 import type { RequestSnapshot } from '@/lib/request-types';
 import { DEFAULT_SIZE_PRESET, getPresetDimensions } from '@/lib/size-utils';
 import { useLiveQuery } from 'dexie-react-hooks';
+import Link from 'next/link';
 import * as React from 'react';
 
 type HistoryImage = {
@@ -37,6 +39,9 @@ export type HistoryMetadata = {
     storageModeUsed?: 'fs' | 'indexeddb';
     durationMs: number;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
+    inputFiles?: { filename: string; name: string; role: string }[];
+    markupFilename?: string;
     background: ImageBackground;
     moderation: ImageModeration;
     prompt: string;
@@ -153,7 +158,7 @@ export default function HomePage() {
     const [editSize, setEditSize] = React.useState<EditingFormData['size']>(DEFAULT_SIZE_PRESET);
     const [editCustomWidth, setEditCustomWidth] = React.useState<number>(1024);
     const [editCustomHeight, setEditCustomHeight] = React.useState<number>(1024);
-    const [editQuality, setEditQuality] = React.useState<EditingFormData['quality']>('low');
+    const [editQuality, setEditQuality] = React.useState<EditingFormData['quality']>('high');
     const [editOutputFormat, setEditOutputFormat] = React.useState<EditingFormData['output_format']>('png');
     const [editCompression, setEditCompression] = React.useState([100]);
     const [editBackground, setEditBackground] = React.useState<EditingFormData['background']>('auto');
@@ -173,7 +178,7 @@ export default function HomePage() {
     const [genSize, setGenSize] = React.useState<GenerationFormData['size']>(DEFAULT_SIZE_PRESET);
     const [genCustomWidth, setGenCustomWidth] = React.useState<number>(1024);
     const [genCustomHeight, setGenCustomHeight] = React.useState<number>(1024);
-    const [genQuality, setGenQuality] = React.useState<GenerationFormData['quality']>('low');
+    const [genQuality, setGenQuality] = React.useState<GenerationFormData['quality']>('high');
     const [genOutputFormat, setGenOutputFormat] = React.useState<GenerationFormData['output_format']>('png');
     const [genCompression, setGenCompression] = React.useState([100]);
     const [genBackground, setGenBackground] = React.useState<GenerationFormData['background']>('auto');
@@ -436,6 +441,7 @@ export default function HomePage() {
             storageModeUsed: effectiveStorageModeClient,
             durationMs,
             quality: snapshot.quality,
+            complexity: snapshot.complexity,
             background: snapshot.background,
             moderation: snapshot.moderation,
             output_format: snapshot.output_format,
@@ -453,6 +459,27 @@ export default function HomePage() {
             archiveWarning: meta.metadataError ?? null
         };
 
+        if (snapshot.mode === 'edit') {
+            try {
+                const prefix = meta.requestId || crypto.randomUUID();
+                const inputs = snapshot.referenceImages.map((r, i) => ({
+                    filename: 'input-' + prefix + '-' + i,
+                    name: r.name,
+                    role: i === 0 ? '底图' : '参考图'
+                }));
+                await db.images.bulkPut(
+                    snapshot.referenceImages.map((r, i) => ({ filename: inputs[i].filename, blob: r.file }))
+                );
+                newHistoryEntry.inputFiles = inputs;
+                if (snapshot.markup) {
+                    const filename = 'markup-' + prefix + '.png';
+                    await db.images.put({ filename, blob: snapshot.markup.file });
+                    newHistoryEntry.markupFilename = filename;
+                }
+            } catch {
+                warnings.push('输入图或标注未能保存到浏览器历史；结果原图不受影响。');
+            }
+        }
         let newImageBatchPromises: Promise<{ path: string; filename: string } | null>[];
         if (effectiveStorageModeClient === 'indexeddb') {
             newImageBatchPromises = images.map(async (img) => {
@@ -523,13 +550,15 @@ export default function HomePage() {
                 model: genData.model,
                 size: resolveRequestSize(genData.size, genData.customWidth, genData.customHeight),
                 quality: genData.quality,
+                complexity: genData.complexity,
                 n: 1,
                 background: genData.background,
                 output_format: genData.output_format,
                 output_compression: genData.output_compression,
                 moderation: genData.moderation,
                 referenceImages: [],
-                mask: null
+                mask: null,
+                markup: null
             };
         }
 
@@ -540,13 +569,15 @@ export default function HomePage() {
             model: editData.model,
             size: resolveRequestSize(editData.size, editData.customWidth, editData.customHeight),
             quality: editData.quality,
+            complexity: editData.complexity,
             n: 1,
             background: editData.background,
             output_format: editData.output_format,
             output_compression: editData.output_compression,
             moderation: editData.moderation,
             referenceImages: editData.imageFiles.map((file) => ({ name: file.name, file })),
-            mask: editData.maskFile ? { name: editData.maskFile.name, file: editData.maskFile } : null
+            mask: editData.maskFile ? { name: editData.maskFile.name, file: editData.maskFile } : null,
+            markup: editData.markupFile ? { name: editData.markupFile.name, file: editData.markupFile } : null
         };
     };
 
@@ -603,6 +634,7 @@ export default function HomePage() {
             apiFormData.append('n', '1');
             apiFormData.append('size', snapshot.size);
             apiFormData.append('quality', snapshot.quality);
+            if (snapshot.complexity) apiFormData.append('complexity', snapshot.complexity);
             apiFormData.append('output_format', snapshot.output_format);
             if (snapshot.output_compression !== undefined) {
                 apiFormData.append('output_compression', snapshot.output_compression.toString());
@@ -614,6 +646,7 @@ export default function HomePage() {
                 snapshot.referenceImages.forEach((reference, index) => {
                     apiFormData.append(`image_${index}`, reference.file, reference.name);
                 });
+                if (snapshot.markup) apiFormData.append('markup', snapshot.markup.file, snapshot.markup.name);
                 if (snapshot.mask) {
                     apiFormData.append('mask', snapshot.mask.file, snapshot.mask.name);
                 }
@@ -926,14 +959,21 @@ export default function HomePage() {
                             {apiKeyStatusLabel}
                         </span>
                     </div>
-                    <Button
-                        type='button'
-                        variant='outline'
-                        data-testid='open-api-key-dialog'
-                        onClick={() => setIsApiKeyDialogOpen(true)}
-                        className='border-neutral-600 text-neutral-200 hover:bg-neutral-700 hover:text-white'>
-                        配置 API Key / 启用生成
-                    </Button>
+                    <div className='flex flex-wrap items-center gap-2'>
+                        <Link
+                            href='/workbench'
+                            className='inline-flex h-9 items-center rounded-md border border-neutral-600 px-3 text-sm text-neutral-200 hover:bg-neutral-700 hover:text-white'>
+                            创作工作台
+                        </Link>
+                        <Button
+                            type='button'
+                            variant='outline'
+                            data-testid='open-api-key-dialog'
+                            onClick={() => setIsApiKeyDialogOpen(true)}
+                            className='border-neutral-600 text-neutral-200 hover:bg-neutral-700 hover:text-white'>
+                            配置 API Key / 启用生成
+                        </Button>
+                    </div>
                 </div>
                 {apiKeyConfigNotice && (
                     <Alert

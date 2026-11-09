@@ -5,11 +5,15 @@ import {
     hasOpenAiApiKey as hasRuntimeOpenAiApiKey,
     isImageApiEnabled as isRuntimeImageApiEnabled
 } from '@/lib/server/runtime-config';
+import crypto from 'node:crypto';
 import fs from 'fs/promises';
 import OpenAI from 'openai';
 import path from 'path';
 
-export type ImageEditParams = OpenAI.Images.ImageEditParamsNonStreaming & { moderation?: ImageModeration };
+export type ImageEditParams = OpenAI.Images.ImageEditParamsNonStreaming & {
+    moderation?: ImageModeration;
+    markup?: File;
+};
 
 // Long edit requests can outlive idle network limits; partial images keep the SSE response active.
 const STREAM_PARTIAL_IMAGES = 2;
@@ -215,7 +219,7 @@ class OpenAiImageApiClient implements ImageApiClient {
 }
 
 type MockScenario = {
-    error?: 'rate_limit' | 'unauthorized' | 'forbidden' | 'timeout' | 'server';
+    error?: 'rate_limit' | 'unauthorized' | 'forbidden' | 'timeout' | 'server' | 'connection';
     usage?: 'present' | 'missing';
     requestId?: string | null;
     delayMs?: number;
@@ -274,7 +278,10 @@ class FixtureImageApiClient implements ImageApiClient {
         const size = typeof params.size === 'string' ? params.size : 'auto';
         const background = params.background ?? 'auto';
         const format = params.output_format ?? 'png';
-        const bytes = await this.readFixture(size, background, format, scenario.fixture);
+        let bytes = await this.readFixture(size, background, format, scenario.fixture);
+        if (process.env.IMAGE_API_MOCK_UNIQUE === '1') {
+            bytes = injectPngText(bytes, 'MockNonce', crypto.randomUUID());
+        }
         const usage = scenario.usage === 'missing' ? undefined : MOCK_USAGE;
 
         const result = {
@@ -356,7 +363,7 @@ class FixtureImageApiClient implements ImageApiClient {
         );
     }
 
-    private createError(kind: NonNullable<MockScenario['error']>): MockUpstreamError {
+    private createError(kind: NonNullable<MockScenario['error']>): Error {
         if (kind === 'rate_limit') {
             return new MockUpstreamError('RateLimitError', 'Mock rate limit (429).', 429);
         }
@@ -368,6 +375,9 @@ class FixtureImageApiClient implements ImageApiClient {
         }
         if (kind === 'timeout') {
             return new MockUpstreamError('APIConnectionTimeoutError', 'Mock request timeout.', 408);
+        }
+        if (kind === 'connection') {
+            return new TypeError('Mock connection reset after dispatch.');
         }
         return new MockUpstreamError('InternalServerError', 'Mock upstream error (500).', 500);
     }
@@ -390,6 +400,8 @@ class FixtureImageApiClient implements ImageApiClient {
             model: params.model,
             size: params.size,
             quality: params.quality,
+            complexity: (params as { complexity?: string }).complexity,
+            has_markup: operation === 'edit' && !!(params as ImageEditParams).markup,
             n: params.n,
             background: params.background,
             output_format: params.output_format,
@@ -415,6 +427,41 @@ class FixtureImageApiClient implements ImageApiClient {
             );
         }
     }
+}
+
+const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let index = 0; index < 256; index++) {
+        let value = index;
+        for (let bit = 0; bit < 8; bit++) {
+            value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+        }
+        table[index] = value >>> 0;
+    }
+    return table;
+})();
+
+function crc32(bytes: Buffer): number {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+        crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Mock-only: give each generated fixture distinct bytes without touching IDAT pixels. */
+function injectPngText(bytes: Buffer, keyword: string, value: string): Buffer {
+    if (bytes.length < 33 || bytes[0] !== 0x89 || bytes.subarray(1, 4).toString('ascii') !== 'PNG') return bytes;
+    const iend = bytes.lastIndexOf(Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]));
+    if (iend < 0) return bytes;
+    const data = Buffer.concat([Buffer.from(keyword, 'latin1'), Buffer.from([0]), Buffer.from(value, 'latin1')]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const type = Buffer.from('tEXt', 'ascii');
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([type, data])), 0);
+    const chunk = Buffer.concat([length, type, data, crc]);
+    return Buffer.concat([bytes.subarray(0, iend), chunk, bytes.subarray(iend)]);
 }
 
 function toFileList(image: ImageEditParams['image']): File[] {

@@ -164,8 +164,8 @@ function HistoryPanelImpl({
                                 </div>
                                 <div className='space-y-2 py-4 text-sm text-neutral-300'>
                                     <p className='rounded-md border border-neutral-700 bg-neutral-800 p-2 text-xs text-neutral-400'>
-                                        这是根据本地历史记录中的 usage 估算的费用，不是 OpenAI 账单或账户余额；缺少 usage
-                                        的记录不会按 0 计入。
+                                        这是根据本地历史记录中的 usage 估算的费用，不是 OpenAI 账单或账户余额；缺少
+                                        usage 的记录不会按 0 计入。
                                     </p>
                                     <div className='flex justify-between'>
                                         <span>Total Images Generated:</span> <span>{totalImages.toLocaleString()}</span>
@@ -236,8 +236,7 @@ function HistoryPanelImpl({
                             const recordedCount = item.n ?? imageCount;
                             const usageTotalTokens = item.usage
                                 ? (item.usage.total_tokens ??
-                                  (item.usage.input_tokens !== undefined ||
-                                  item.usage.output_tokens !== undefined
+                                  (item.usage.input_tokens !== undefined || item.usage.output_tokens !== undefined
                                       ? (item.usage.input_tokens ?? 0) + (item.usage.output_tokens ?? 0)
                                       : undefined))
                                 : undefined;
@@ -434,11 +433,57 @@ function HistoryPanelImpl({
                                         <p>
                                             <span className='font-medium text-white/80'>Size:</span> {recordedSize}
                                         </p>
+                                        {item.images?.[0]?.width && item.images[0].height && (
+                                            <p>
+                                                实际像素：{item.images[0].width} × {item.images[0].height}
+                                            </p>
+                                        )}
+                                        {item.markupFilename && <p>标注：已保存并关联第一张底图</p>}
+                                        {item.inputFiles && (
+                                            <p>
+                                                输入顺序：
+                                                {item.inputFiles
+                                                    .map((f, i) => i + 1 + '. ' + f.role + ' ' + f.name)
+                                                    .join('；')}
+                                            </p>
+                                        )}
+                                        {item.inputFiles?.[0] &&
+                                            thumbnailUrl &&
+                                            getImageSrc(item.inputFiles[0].filename) && (
+                                                <Dialog>
+                                                    <DialogTrigger asChild>
+                                                        <Button variant='outline' size='sm'>
+                                                            修改前后对比
+                                                        </Button>
+                                                    </DialogTrigger>
+                                                    <DialogContent className='max-w-4xl bg-black text-white'>
+                                                        <DialogHeader>
+                                                            <DialogTitle>修改前后</DialogTitle>
+                                                            <DialogDescription>
+                                                                左侧为本次提交的底图，右侧为结果。
+                                                            </DialogDescription>
+                                                        </DialogHeader>
+                                                        <div className='grid grid-cols-2 gap-2'>
+                                                            <img
+                                                                alt='修改前'
+                                                                src={getImageSrc(item.inputFiles[0].filename)}
+                                                                className='w-full object-contain'
+                                                            />
+                                                            <img
+                                                                alt='修改后'
+                                                                src={thumbnailUrl}
+                                                                className='w-full object-contain'
+                                                            />
+                                                        </div>
+                                                    </DialogContent>
+                                                </Dialog>
+                                            )}
                                         <p>
                                             <span className='font-medium text-white/80'>Count:</span> {recordedCount}
                                         </p>
                                         <p>
-                                            <span className='font-medium text-white/80'>Quality:</span> {item.quality}
+                                            <span className='font-medium text-white/80'>Quality:</span> {item.quality}{' '}
+                                            {item.complexity && ` · Complexity: ${item.complexity}`}
                                         </p>
                                         <p>
                                             <span className='font-medium text-white/80'>BG:</span> {item.background}
@@ -458,7 +503,9 @@ function HistoryPanelImpl({
                                                 ? `~$${item.costDetails.estimated_cost_usd.toFixed(4)}（根据 usage 估算）`
                                                 : '未知'}
                                         </p>
-                                        {item.isMock && <p className='text-purple-300'>MOCK 测试数据（未调用真实 API）</p>}
+                                        {item.isMock && (
+                                            <p className='text-purple-300'>MOCK 测试数据（未调用真实 API）</p>
+                                        )}
                                         {item.requestId && (
                                             <p className='truncate' title={item.requestId}>
                                                 <span className='font-medium text-white/80'>Local ID:</span>{' '}

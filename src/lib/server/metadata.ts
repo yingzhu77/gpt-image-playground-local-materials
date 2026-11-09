@@ -2,6 +2,7 @@ import { calculateApiCost } from '@/lib/cost-utils';
 import type { DetectedImageFormat } from '@/lib/image-dimensions';
 import type {
     GptImageModel,
+    ImageComplexity,
     ImageBackground,
     ImageModeration,
     ImageOutputFormat,
@@ -38,6 +39,7 @@ export type ImageRequestMetadata = {
     requested_width: number | null;
     requested_height: number | null;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     n: number;
     background: ImageBackground;
     output_format: ImageOutputFormat;
@@ -45,6 +47,8 @@ export type ImageRequestMetadata = {
     moderation: ImageModeration;
     reference_image_count: number;
     reference_images: ArchivedReferenceImage[];
+    archived_inputs: string[];
+    markup_file: string | null;
     has_mask: boolean;
     mask_filename: string | null;
     mask_size_bytes: number | null;
@@ -72,12 +76,15 @@ type BuildMetadataInput = {
     model: GptImageModel;
     size: string;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     n: number;
     background: ImageBackground;
     outputFormat: ImageOutputFormat;
     outputCompression?: number;
     moderation: ImageModeration;
     referenceImages: ArchivedReferenceImage[];
+    archivedInputs: string[];
+    markupArchive: string | null;
     mask: { filename: string; sizeBytes: number } | null;
     images: ArchivedOutputImage[];
     usage: OpenAI.Images.ImagesResponse['usage'] | null;
@@ -107,6 +114,7 @@ export function buildImageMetadata(input: BuildMetadataInput): ImageRequestMetad
         requested_width: requested?.width ?? null,
         requested_height: requested?.height ?? null,
         quality: input.quality,
+        complexity: input.complexity,
         n: input.n,
         background: input.background,
         output_format: input.outputFormat,
@@ -114,6 +122,8 @@ export function buildImageMetadata(input: BuildMetadataInput): ImageRequestMetad
         moderation: input.moderation,
         reference_image_count: input.referenceImages.length,
         reference_images: input.referenceImages,
+        archived_inputs: input.archivedInputs,
+        markup_file: input.markupArchive,
         has_mask: !!input.mask,
         mask_filename: input.mask?.filename ?? null,
         mask_size_bytes: input.mask?.sizeBytes ?? null,

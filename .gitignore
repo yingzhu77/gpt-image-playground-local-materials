@@ -45,3 +45,4 @@ next-env.d.ts
 generated-images/
 /test-artifacts/
 /.local-server*
+/.workbench-data/

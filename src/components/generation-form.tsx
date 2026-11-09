@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import {
     GPT_IMAGE_MODELS,
+    supportsComplexity,
+    type ImageComplexity,
     type GptImageModel,
     type ImageBackground,
     type ImageModeration,
@@ -26,6 +28,7 @@ export type GenerationFormData = {
     customWidth: number;
     customHeight: number;
     quality: ImageQuality;
+    complexity?: ImageComplexity;
     output_format: ImageOutputFormat;
     output_compression?: number;
     background: ImageBackground;
@@ -92,6 +95,7 @@ export function GenerationForm({
     moderation,
     setModeration
 }: GenerationFormProps) {
+    const [complexity, setComplexity] = React.useState<ImageComplexity>('high');
     const showCompression = outputFormat === 'jpeg' || outputFormat === 'webp';
     const customSizeValidation =
         size === 'custom' ? validateCustomSize(customWidth, customHeight) : { valid: true as const };
@@ -109,6 +113,7 @@ export function GenerationForm({
             customWidth,
             customHeight,
             quality,
+            ...(supportsComplexity(model) ? { complexity } : {}),
             output_format: outputFormat,
             background,
             moderation,
@@ -166,7 +171,9 @@ export function GenerationForm({
                                 ))}
                             </SelectContent>
                         </Select>
-                        <p className='text-xs text-white/50'>流式预览本轮关闭；点击生成后先确认参数，不会直接请求 API。</p>
+                        <p className='text-xs text-white/50'>
+                            流式预览本轮关闭；点击生成后先确认参数，不会直接请求 API。
+                        </p>
                     </div>
 
                     <div className='space-y-1.5'>
@@ -186,6 +193,22 @@ export function GenerationForm({
 
                     <p className='text-sm text-white/60'>张数：1（本轮固定单张）</p>
 
+                    {supportsComplexity(model) && (
+                        <div className='space-y-1'>
+                            <Label className='text-white'>Complexity（生成前规划投入）</Label>
+                            <select
+                                aria-label='Complexity'
+                                value={complexity}
+                                onChange={(e) => setComplexity(e.target.value as ImageComplexity)}
+                                disabled={isLoading}
+                                className='block rounded border border-white/20 bg-black p-2 text-white'>
+                                <option value='low'>Low</option>
+                                <option value='medium'>Medium</option>
+                                <option value='high'>High</option>
+                            </select>
+                            <p className='text-xs text-white/60'>控制生成前的规划投入，与渲染质量独立。</p>
+                        </div>
+                    )}
                     <ImageOptions
                         idPrefix='gen'
                         model={model}
