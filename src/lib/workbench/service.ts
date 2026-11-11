@@ -21,6 +21,7 @@ import {
     type PlannerReasoningEffort
 } from '@/lib/workbench/config';
 import { buildCostEstimate } from '@/lib/workbench/estimate';
+import { canStopLocalService } from '@/lib/workbench/local-lifecycle';
 import { SafeDownloadError, safeDownloadImage } from '@/lib/workbench/fetcher';
 import { createDesignDraft, updateDesign } from '@/lib/workbench/planner';
 import { compilePrompt } from '@/lib/workbench/prompt';
@@ -110,6 +111,7 @@ export function getWorkbenchStatus(): WorkbenchStatus {
     const imageApi = getImageApiConfiguration();
     const heartbeat = getWorkerHeartbeat();
     return {
+        localStopAvailable: canStopLocalService(),
         imageApiEnabled: imageApi.enabled,
         apiKeyConfigured: imageApi.apiKeyConfigured,
         plannerModel: getPlannerModel(),

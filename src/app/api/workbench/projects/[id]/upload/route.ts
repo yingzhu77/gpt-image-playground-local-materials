@@ -2,6 +2,7 @@ import {
     assertSameOrigin,
     errorResponse,
     requireLoopbackHost,
+    requireLocalRequestSlot,
     verifyAppPassword,
     workbenchJson
 } from '@/lib/workbench/http';
@@ -13,10 +14,12 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    let release: (() => void) | undefined;
     try {
         requireLoopbackHost(request);
         assertSameOrigin(request);
         verifyAppPassword(request);
+        release = requireLocalRequestSlot();
         const { id } = await params;
         const limits = getLimits();
         const contentLength = Number(request.headers.get('content-length') ?? '0');
@@ -45,5 +48,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         return workbenchJson({ ok: true, asset, project: getProjectDetail(id) });
     } catch (error) {
         return errorResponse(error);
+    } finally {
+        release?.();
     }
 }

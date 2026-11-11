@@ -310,8 +310,8 @@ export function GenerateDialog({
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
             <DialogContent className='border-wb-border bg-wb-panel text-wb-ink max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
                 <DialogHeader>
-                    <DialogTitle>确认生成批次</DialogTitle>
-                    <DialogDescription>确认后保存不可变快照；之后再改草稿或参考组不会影响本批次。</DialogDescription>
+                    <DialogTitle>生成图片</DialogTitle>
+                    <DialogDescription>确认后按当前保存的方案生成。</DialogDescription>
                 </DialogHeader>
                 {submitError && (
                     <p role='alert' className='text-wb-error text-sm leading-relaxed'>
@@ -356,82 +356,95 @@ export function GenerateDialog({
                     </div>
                 )}
 
+                <details className='border-wb-border rounded-md border p-3'>
+                    <summary className='text-wb-accent cursor-pointer text-sm'>
+                        参数 · {params.model} · {resolvedSize}
+                    </summary>
+                    <div className='mt-3 grid gap-3 sm:grid-cols-2'>
+                        <div className='space-y-1'>
+                            <p className='text-wb-muted text-xs'>模型</p>
+                            <Select
+                                value={params.model}
+                                onValueChange={(value) => setParams((current) => ({ ...current, model: value }))}>
+                                <SelectTrigger
+                                    aria-label='图像模型'
+                                    className='border-wb-border bg-wb-panel h-9 text-sm'>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {status.models.image.map((model) => (
+                                        <SelectItem key={model} value={model}>
+                                            {model}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className='space-y-1'>
+                            <p className='text-wb-muted text-xs'>尺寸</p>
+                            <Select
+                                value={params.size}
+                                onValueChange={(value) => setParams((current) => ({ ...current, size: value }))}>
+                                <SelectTrigger
+                                    aria-label='图像尺寸'
+                                    className='border-wb-border bg-wb-panel h-9 text-sm'>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {SIZE_OPTIONS.map((option) => (
+                                        <SelectItem key={option.value} value={option.value}>
+                                            {option.label}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            {params.size === 'custom' && (
+                                <div className='flex items-center gap-1'>
+                                    <Input
+                                        aria-label='自定义宽度'
+                                        type='number'
+                                        value={width}
+                                        onChange={(event) => setWidth(Number(event.target.value))}
+                                        className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
+                                    />
+                                    <span className='text-wb-muted text-xs'>×</span>
+                                    <Input
+                                        aria-label='自定义高度'
+                                        type='number'
+                                        value={height}
+                                        onChange={(event) => setHeight(Number(event.target.value))}
+                                        className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
+                                    />
+                                </div>
+                            )}
+                            {params.size === 'custom' && !customValidation.valid && (
+                                <p className='text-wb-error text-xs'>{customValidation.reason}</p>
+                            )}
+                        </div>
+                        <div className='space-y-1'>
+                            <p className='text-wb-muted text-xs'>质量</p>
+                            <Select
+                                value={params.quality}
+                                onValueChange={(value) => setParams((current) => ({ ...current, quality: value }))}>
+                                <SelectTrigger
+                                    aria-label='图像质量'
+                                    className='border-wb-border bg-wb-panel h-9 text-sm'>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {qualityOptions.map((quality) => (
+                                        <SelectItem key={quality} value={quality}>
+                                            {quality}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    </div>
+                </details>
                 <div className='grid gap-3 sm:grid-cols-2'>
                     <div className='space-y-1'>
-                        <p className='text-wb-muted text-xs'>模型</p>
-                        <Select
-                            value={params.model}
-                            onValueChange={(value) => setParams((current) => ({ ...current, model: value }))}>
-                            <SelectTrigger aria-label='图像模型' className='border-wb-border bg-wb-panel h-9 text-sm'>
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {status.models.image.map((model) => (
-                                    <SelectItem key={model} value={model}>
-                                        {model}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                    <div className='space-y-1'>
-                        <p className='text-wb-muted text-xs'>尺寸</p>
-                        <Select
-                            value={params.size}
-                            onValueChange={(value) => setParams((current) => ({ ...current, size: value }))}>
-                            <SelectTrigger aria-label='图像尺寸' className='border-wb-border bg-wb-panel h-9 text-sm'>
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {SIZE_OPTIONS.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
-                                        {option.label}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        {params.size === 'custom' && (
-                            <div className='flex items-center gap-1'>
-                                <Input
-                                    aria-label='自定义宽度'
-                                    type='number'
-                                    value={width}
-                                    onChange={(event) => setWidth(Number(event.target.value))}
-                                    className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
-                                />
-                                <span className='text-wb-muted text-xs'>×</span>
-                                <Input
-                                    aria-label='自定义高度'
-                                    type='number'
-                                    value={height}
-                                    onChange={(event) => setHeight(Number(event.target.value))}
-                                    className='border-wb-border bg-wb-panel h-9 w-24 text-sm'
-                                />
-                            </div>
-                        )}
-                        {params.size === 'custom' && !customValidation.valid && (
-                            <p className='text-wb-error text-xs'>{customValidation.reason}</p>
-                        )}
-                    </div>
-                    <div className='space-y-1'>
-                        <p className='text-wb-muted text-xs'>质量</p>
-                        <Select
-                            value={params.quality}
-                            onValueChange={(value) => setParams((current) => ({ ...current, quality: value }))}>
-                            <SelectTrigger aria-label='图像质量' className='border-wb-border bg-wb-panel h-9 text-sm'>
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {qualityOptions.map((quality) => (
-                                    <SelectItem key={quality} value={quality}>
-                                        {quality}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                    <div className='space-y-1'>
-                        <p className='text-wb-muted text-xs'>数量（独立结果）</p>
+                        <p className='text-wb-muted text-xs'>生成数量</p>
                         <Select
                             value={String(params.imageCount)}
                             onValueChange={(value) =>
@@ -449,7 +462,7 @@ export function GenerateDialog({
                         </Select>
                     </div>
                     <div className='space-y-1'>
-                        <p className='text-wb-muted text-xs'>本次预算上限（USD，应用内约束）</p>
+                        <p className='text-wb-muted text-xs'>预算上限（美元）</p>
                         <Input
                             aria-label='预算上限（USD）'
                             type='number'
@@ -537,8 +550,8 @@ export function GenerateDialog({
                         className='accent-wb-accent mt-0.5'
                     />
                     <span>
-                        我确认：本次包含 {params.imageCount} 次生图与 {params.imageCount}{' '}
-                        次审稿调用；审稿文本模型费用未知，图片费用为估算而非账单。超出预算或结果未知时系统会暂停后续付费调用。
+                        我确认发起 {params.imageCount} 次生图和 {params.imageCount}{' '}
+                        次审稿。图片费用为估算，审稿费用未知。超预算或结果未知时，后续调用会暂停。
                     </span>
                 </label>
 
@@ -645,7 +658,7 @@ export function RevisionDialog({
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
             <DialogContent className='border-wb-border bg-wb-panel text-wb-ink max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
                 <DialogHeader>
-                    <DialogTitle>定向修订 {base.label}</DialogTitle>
+                    <DialogTitle>修改这张 · {base.label}</DialogTitle>
                     <DialogDescription>
                         基底固定为版本 {base.label}；参考图按原快照辅助。只执行一次编辑，新版本保留父版本关系。
                     </DialogDescription>
@@ -731,7 +744,7 @@ export function RevisionDialog({
                         取消
                     </Button>
                     <Button disabled={busy || !risk} onClick={() => void submit()}>
-                        {busy ? <Spinner label='提交中' /> : '确认修订'}
+                        {busy ? <Spinner label='提交中' /> : '确认修改（真实调用）'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -797,7 +810,7 @@ export function RerollDialog({
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
             <DialogContent className='border-wb-border bg-wb-panel text-wb-ink sm:max-w-2xl'>
                 <DialogHeader>
-                    <DialogTitle>同方案再抽</DialogTitle>
+                    <DialogTitle>按原设置再生成</DialogTitle>
                     <DialogDescription>
                         复用指定运行的已确认提示词、参考组和参数；不调用规划器改方向，创建新的授权运行。
                     </DialogDescription>
@@ -863,7 +876,7 @@ export function RerollDialog({
                         取消
                     </Button>
                     <Button disabled={busy || !risk} onClick={() => void submit()}>
-                        {busy ? <Spinner label='提交中' /> : '确认再抽'}
+                        {busy ? <Spinner label='提交中' /> : '确认生成（真实调用）'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

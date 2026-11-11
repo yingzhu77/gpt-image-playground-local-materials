@@ -26,7 +26,6 @@ import { ReviewPanel } from '@/components/workbench/review-panel';
 import { SearchPanel } from '@/components/workbench/search-panel';
 import {
     DraftStatusContext,
-    RunStatusBadge,
     Spinner,
     isActiveRun,
     handleTabListKeys,
@@ -38,16 +37,23 @@ import { ThemeArtwork } from '@/components/workbench/theme-artwork';
 import { ThemeBoundary } from '@/components/workbench/theme-boundary';
 import { formatTime, projectAction, uploadProjectFile, workbenchFetch } from '@/lib/workbench/client';
 import type { ProjectDetail, ProjectSummary, WorkbenchStatus } from '@/lib/workbench/types';
+import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
-type LeftTab = 'design' | 'references' | 'search';
-type MobileView = 'materials' | 'artwork' | 'review';
+type EditorTab = 'design' | 'references' | 'search' | 'prompt';
+
+const EDITOR_TABS: Record<EditorTab, string> = {
+    design: '方案',
+    references: '参考图',
+    search: '搜图',
+    prompt: '提示词'
+};
 type DraftExit = { title: string; next: () => void };
 const DRAFT_LABELS: Record<string, string> = {
-    design: '设计卡',
-    prompt: '提示词 / 避免项 / 验收项',
+    design: '创作方案',
+    prompt: '提示词',
     references: '参考图说明与顺序',
     reference: '参考图说明与顺序'
 };
@@ -62,16 +68,15 @@ export function WorkbenchApp() {
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [notice, setNotice] = React.useState<string | null>(null);
-    const [tab, setTab] = React.useState<LeftTab>('design');
-    const [centerView, setCenterView] = React.useState<'auto' | 'artwork' | 'prompt'>('auto');
-    const [mobileView, setMobileView] = React.useState<MobileView>('artwork');
-    const [leftClosed, setLeftClosed] = React.useState(false);
+    const [editorOpen, setEditorOpen] = React.useState(false);
+    const [editorTab, setEditorTab] = React.useState<EditorTab>('design');
     const [reviewOpen, setReviewOpen] = React.useState(false);
-    const [reviewClosed, setReviewClosed] = React.useState(false);
-    const [wideViewport, setWideViewport] = React.useState(false);
-    const [focus, setFocus] = React.useState(false);
     const [showTheme, setShowTheme] = React.useState(true);
     const [settingsOpen, setSettingsOpen] = React.useState(false);
+    const [stopOpen, setStopOpen] = React.useState(false);
+    const [stopPending, setStopPending] = React.useState(false);
+    const [stopAccepted, setStopAccepted] = React.useState(false);
+    const [stopError, setStopError] = React.useState<string | null>(null);
     const [draftKeys, setDraftKeys] = React.useState<string[]>([]);
     const drafts = React.useRef(new Set<string>());
     const [draftEpoch, setDraftEpoch] = React.useState(0);
@@ -110,8 +115,9 @@ export function WorkbenchApp() {
         setProjectId(id);
         setDetail(null);
         setSelectedVersionId(null);
-        setCenterView('auto');
-        setMobileView('artwork');
+        setEditorOpen(false);
+        setEditorTab('design');
+        setReviewOpen(false);
         setError(null);
         window.history.replaceState({}, '', id ? `/workbench?project=${encodeURIComponent(id)}` : '/workbench');
     }, []);
@@ -138,17 +144,6 @@ export function WorkbenchApp() {
         return () => {
             cancelled = true;
         };
-    }, []);
-    React.useEffect(() => {
-        const media = window.matchMedia('(min-width: 1600px)');
-        const updateViewport = () => {
-            setWideViewport(media.matches);
-            setReviewOpen(false);
-            setReviewClosed(false);
-        };
-        updateViewport();
-        media.addEventListener('change', updateViewport);
-        return () => media.removeEventListener('change', updateViewport);
     }, []);
     React.useEffect(() => {
         const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -266,8 +261,7 @@ export function WorkbenchApp() {
         async (action: string, payload: Record<string, unknown> = {}) => {
             if (!projectId) return null;
             if (action === 'run.create' && drafts.current.size) {
-                const message =
-                    '有未保存草稿。请先保存设计卡、提示词与参考说明，或明确放弃草稿后重新打开生成确认。尚未创建任务。';
+                const message = '有未保存的修改。请先保存或放弃修改，再生成图片。';
                 setError(message);
                 throw new Error(message);
             }
@@ -324,8 +318,9 @@ export function WorkbenchApp() {
         setDetail(project);
         setStatus(project.status);
         setProjectId(project.project.id);
-        setCenterView('auto');
-        setMobileView('artwork');
+        setEditorOpen(false);
+        setEditorTab('design');
+        setReviewOpen(false);
         setSelectedVersionId(project.versions[0]?.id ?? null);
         window.history.replaceState({}, '', `/workbench?project=${encodeURIComponent(project.project.id)}`);
         const response = await workbenchFetch<{ projects: ProjectSummary[] }>('/api/workbench/projects');
@@ -340,83 +335,81 @@ export function WorkbenchApp() {
         }
     }
     const openRevision = (versionId: string, suggestions: { change: string; keep: string }[] = []) =>
-        guardDrafts('打开定向修订确认', () => setRevision({ open: true, versionId, suggestions }));
+        guardDrafts('修改这张', () => setRevision({ open: true, versionId, suggestions }));
     const baseVersion = detail?.versions.find((version) => version.id === revision.versionId) ?? null;
     const rerollRun = detail?.runs.find((run) => run.id === rerollRunId) ?? null;
-    const resolvedCenter = centerView === 'auto' ? (detail?.versions.length ? 'artwork' : 'prompt') : centerView;
     const draftLabels = [...new Set(draftKeys.map((key) => DRAFT_LABELS[key.split(':')[0]] ?? '参考图编辑'))];
-    const urgentRuns =
-        detail?.runs.filter((run) => run.status === 'paused_unknown' || run.status === 'paused_budget') ?? [];
     const workspaceKey = `${projectId}:${draftEpoch}`;
-    const reviewVisible = !focus && (wideViewport ? !reviewClosed : reviewOpen);
+    const promptReady = !!detail?.prompt.text.trim() && !detail.prompt.stale;
+    const generationAvailable = !!status?.imageApiEnabled && !!status.apiKeyConfigured;
+
+    function openEditor(tab: EditorTab = editorTab) {
+        setEditorTab(tab);
+        setEditorOpen(true);
+    }
+
+    function openGenerate() {
+        if (!promptReady) {
+            openEditor('prompt');
+            return;
+        }
+        guardDrafts('生成图片', () => setGenerateOpen(true));
+    }
+
+    async function stopLocalService() {
+        if (drafts.current.size || stopPending) return;
+        setStopPending(true);
+        setStopError(null);
+        try {
+            await workbenchFetch('/api/workbench/local-stop', { method: 'POST' });
+            setStopAccepted(true);
+        } catch (stopFailure) {
+            setStopError(stopFailure instanceof Error ? stopFailure.message : '停止服务失败。');
+        } finally {
+            setStopPending(false);
+        }
+    }
+
+    if (stopAccepted) {
+        return (
+            <ThemeBoundary>
+                <main className='wb-app grid place-items-center p-4'>
+                    <section
+                        className='border-wb-border bg-wb-panel w-full max-w-md space-y-3 rounded-xl border p-6'
+                        role='status'>
+                        <h1 className='text-xl font-semibold'>已请求停止工作台</h1>
+                        <p className='text-wb-muted'>下次使用时，双击桌面上的「创作工作台」。</p>
+                    </section>
+                </main>
+            </ThemeBoundary>
+        );
+    }
 
     return (
         <ThemeBoundary>
             <DraftStatusContext.Provider value={reportDraft}>
-                <main className={focus ? 'wb-app wb-focus' : 'wb-app'}>
+                <main className='wb-app'>
                     <header className='wb-topbar'>
                         <button
                             type='button'
                             className='wb-brand'
                             onClick={() => navigateProject(null)}
                             aria-label='返回创作工作台项目首页'>
-                            <span className='wb-brand-mark' aria-hidden='true' />
+                            <Image
+                                src='/favicon.svg'
+                                alt=''
+                                width={32}
+                                height={32}
+                                className='wb-brand-mark'
+                                unoptimized
+                            />
                             创作工作台
                         </button>
-                        {projects.length > 0 && (
-                            <Select value={projectId ?? ''} onValueChange={navigateProject}>
-                                <SelectTrigger aria-label='选择项目' className='wb-header-project w-56 min-w-0'>
-                                    <SelectValue placeholder='项目首页' />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {projects.map((project) => (
-                                        <SelectItem key={project.id} value={project.id}>
-                                            <span className='block max-w-80 truncate' title={project.name}>
-                                                {project.name}
-                                            </span>
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        )}
-                        <Button
-                            variant='outline'
-                            disabled={busy}
-                            onClick={() => guardDrafts('新建创作', () => setCreateOpen(true))}>
-                            新建创作
+                        <Button className='ml-auto' variant='outline' onClick={() => setSettingsOpen(true)}>
+                            设置
                         </Button>
-                        <div className='ml-auto flex flex-wrap items-center gap-2'>
-                            {status ? (
-                                <span className='border-wb-warning bg-wb-warning-soft text-wb-warning rounded border px-2 py-1.5 text-xs'>
-                                    {status.imageApiEnabled && status.apiKeyConfigured
-                                        ? '真实调用已启用 · 费用需确认'
-                                        : '生成未启用 / 缺少 Key'}
-                                </span>
-                            ) : (
-                                <Spinner label='读取配置' />
-                            )}
-                            <Button variant='outline' onClick={() => setSettingsOpen(true)}>
-                                设置
-                            </Button>
-                            <Link
-                                href='/'
-                                className='text-wb-muted text-xs underline underline-offset-4'
-                                onClick={(event) => {
-                                    if (!drafts.current.size) return;
-                                    event.preventDefault();
-                                    guardDrafts('返回快捷生图', () => router.push('/'));
-                                }}>
-                                快捷生图
-                            </Link>
-                        </div>
                     </header>
-                    <div className='space-y-2 px-4 pt-2 sm:px-6' aria-live='polite'>
-                        {status && (!status.imageApiEnabled || !status.apiKeyConfigured) && (
-                            <p className='border-wb-warning bg-wb-warning-soft text-wb-warning rounded border p-2 text-sm'>
-                                真实生图未启用：{!status.imageApiEnabled ? 'ENABLE_IMAGE_API=false；' : ''}
-                                {!status.apiKeyConfigured ? '服务端缺少 OPENAI_API_KEY。' : ''}请在设置中查看运行信息。
-                            </p>
-                        )}
+                    <div className='wb-feedback' aria-live='polite'>
                         {error && (
                             <div
                                 role='alert'
@@ -434,62 +427,6 @@ export function WorkbenchApp() {
                                 {notice}
                             </p>
                         )}
-                        {!!draftLabels.length && (
-                            <div className='border-wb-warning bg-wb-warning-soft text-wb-warning flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2 text-sm'>
-                                <span>未保存：{draftLabels.join('、')}。生成前请保存。</span>
-                                <Button variant='outline' onClick={() => guardDrafts('放弃本项目未保存草稿', () => {})}>
-                                    放弃草稿
-                                </Button>
-                            </div>
-                        )}
-                        {detail?.prompt.stale && (
-                            <p className='border-wb-warning bg-wb-warning-soft text-wb-warning rounded border px-3 py-2 text-sm'>
-                                提示词已过期：设计卡或参考组已变化。请展开提示词重新编译，或明确保留手动版本。
-                            </p>
-                        )}
-                        {detail?.runs[0] && !['paused_unknown', 'paused_budget'].includes(detail.runs[0].status) && (
-                            <div className='border-wb-border bg-wb-panel flex flex-wrap items-center gap-3 rounded border px-3 py-2 text-sm'>
-                                <span>最近运行</span>
-                                <RunStatusBadge status={detail.runs[0].status} />
-                                {detail.runs[0].errorMessage && (
-                                    <span className='text-wb-error'>{detail.runs[0].errorMessage}</span>
-                                )}
-                                {detail.runs[0].items.some(
-                                    (item) => item.kind === 'image' && item.status === 'sending'
-                                ) && <span className='text-wb-info'>等待图像返回</span>}
-                                <button
-                                    type='button'
-                                    className='text-wb-accent underline underline-offset-4'
-                                    onClick={() => {
-                                        setMobileView('artwork');
-                                        setCenterView('artwork');
-                                    }}>
-                                    查看运行记录
-                                </button>
-                            </div>
-                        )}
-                        {urgentRuns.map((run) => (
-                            <div
-                                key={run.id}
-                                role='alert'
-                                className='border-wb-warning bg-wb-warning-soft text-wb-warning flex flex-wrap items-center gap-3 rounded border px-3 py-2 text-sm'>
-                                <RunStatusBadge status={run.status} />
-                                <span>
-                                    {run.errorMessage ??
-                                        (run.status === 'paused_unknown'
-                                            ? '请求结果未知，任务已暂停；不会自动重发。'
-                                            : '预算或费用待核实，后续调用已暂停。')}
-                                </span>
-                                <Button
-                                    variant='outline'
-                                    onClick={() => {
-                                        setMobileView('artwork');
-                                        setCenterView('artwork');
-                                    }}>
-                                    查看运行记录
-                                </Button>
-                            </div>
-                        ))}
                     </div>
                     {loading ? (
                         <div className='flex min-h-[60vh] items-center justify-center'>
@@ -511,215 +448,115 @@ export function WorkbenchApp() {
                         </div>
                     ) : (
                         <div className='wb-workspace-wrap'>
-                            <div className='wb-workspace-toolbar'>
-                                <div className='min-w-0 flex-1'>
-                                    <button
-                                        type='button'
-                                        className='text-wb-muted mb-1 text-xs underline underline-offset-4'
-                                        onClick={() => navigateProject(null)}>
-                                        项目首页
-                                    </button>
-                                    <h1 className='text-lg font-semibold break-words'>{detail.project.name}</h1>
-                                </div>
-                                <div className='flex flex-wrap gap-2'>
-                                    <Button
-                                        variant='outline'
-                                        disabled={busy}
-                                        onClick={() => guardDrafts('探索新方向', () => setForkOpen(true))}>
-                                        探索新方向
-                                    </Button>
-                                    <Button
-                                        variant='outline'
-                                        className='wb-desktop-toggle'
-                                        aria-pressed={!leftClosed}
-                                        onClick={() => setLeftClosed((value) => !value)}>
-                                        {leftClosed ? '展开资料' : '收起资料'}
-                                    </Button>
-                                    <Button
-                                        variant='outline'
-                                        className='wb-desktop-toggle'
-                                        aria-pressed={reviewVisible}
-                                        onClick={() => {
-                                            setFocus(false);
-                                            if (wideViewport) {
-                                                setReviewOpen(false);
-                                                setReviewClosed(reviewVisible);
-                                            } else {
-                                                setReviewClosed(false);
-                                                setReviewOpen(!reviewVisible);
-                                            }
-                                        }}>
-                                        {reviewVisible ? '关闭审稿面板' : '审稿面板'}
-                                    </Button>
-                                    <Button
-                                        variant='outline'
-                                        aria-pressed={focus}
-                                        onClick={() => {
-                                            setFocus((value) => !value);
-                                            if (!focus) {
-                                                setCenterView('artwork');
-                                                setMobileView('artwork');
-                                            }
-                                        }}>
-                                        {focus ? '退出专注' : '专注作品'}
-                                    </Button>
-                                </div>
-                            </div>
                             <div
-                                className='wb-tabs wb-mobile-views'
-                                role='tablist'
-                                onKeyDown={handleTabListKeys}
-                                aria-label='工作区视图'>
-                                {(['materials', 'artwork', 'review'] as MobileView[]).map((view) => (
-                                    <button
-                                        type='button'
-                                        key={view}
-                                        role='tab'
-                                        aria-selected={mobileView === view}
-                                        tabIndex={mobileView === view ? 0 : -1}
-                                        onClick={() => {
-                                            setMobileView(view);
-                                            setFocus(false);
-                                        }}>
-                                        {view === 'materials' ? '资料' : view === 'artwork' ? '作品与提示词' : '审稿'}
-                                    </button>
-                                ))}
-                            </div>
-                            <div
-                                className='wb-workspace'
-                                data-left-closed={leftClosed}
-                                data-review-open={reviewOpen}
-                                data-review-closed={reviewClosed}
-                                data-mobile-view={mobileView}>
-                                <aside className='wb-side wb-materials space-y-3' aria-label='创作资料'>
-                                    {showTheme && !focus && (
-                                        <details
-                                            open
-                                            className='border-wb-border bg-wb-panel rounded-lg border px-3 py-2'>
-                                            <summary className='text-wb-muted cursor-pointer text-xs'>主题插画</summary>
-                                            <ThemeArtwork compact />
-                                        </details>
+                                className={
+                                    editorOpen ? 'wb-workspace-toolbar wb-editor-toolbar' : 'wb-workspace-toolbar'
+                                }>
+                                <h1 className='wb-project-title'>{editorOpen ? '编辑方案' : detail.project.name}</h1>
+                                <div className='flex shrink-0 flex-wrap items-center justify-end gap-1'>
+                                    {editorOpen && draftKeys.length > 0 && (
+                                        <Button
+                                            variant='ghost'
+                                            onClick={() => guardDrafts('返回作品', () => setEditorOpen(false))}>
+                                            放弃修改
+                                        </Button>
                                     )}
+                                    <Button
+                                        variant='secondary'
+                                        onClick={() => (editorOpen ? setEditorOpen(false) : openEditor())}>
+                                        {editorOpen ? '返回作品' : `编辑方案${draftKeys.length > 0 ? ' · 未保存' : ''}`}
+                                    </Button>
+                                </div>
+                            </div>
+                            <div className='wb-workspace'>
+                                <div hidden={editorOpen}>
+                                    <StagePanel
+                                        key={`stage:${projectId}`}
+                                        {...panelProps!}
+                                        onOpenGenerate={openGenerate}
+                                        onOpenReview={() => setReviewOpen(true)}
+                                        onOpenFork={() => guardDrafts('从此项目新建', () => setForkOpen(true))}
+                                        onOpenRevision={openRevision}
+                                        onOpenReroll={(runId) =>
+                                            guardDrafts('按原设置再生成', () => setRerollRunId(runId))
+                                        }
+                                    />
+                                </div>
+                                <section hidden={!editorOpen} className='wb-editor' aria-label='编辑方案'>
                                     <div
                                         className='wb-tabs'
                                         role='tablist'
                                         onKeyDown={handleTabListKeys}
-                                        aria-label='创作资料分类'>
-                                        {(['design', 'references', 'search'] as LeftTab[]).map((item) => (
+                                        aria-label='方案编辑'>
+                                        {(Object.keys(EDITOR_TABS) as EditorTab[]).map((item) => (
                                             <button
                                                 type='button'
                                                 key={item}
+                                                id={`wb-tab-${item}`}
                                                 role='tab'
-                                                aria-selected={tab === item}
-                                                tabIndex={tab === item ? 0 : -1}
-                                                onClick={() => setTab(item)}>
-                                                {item === 'design'
-                                                    ? '设计卡'
-                                                    : item === 'references'
-                                                      ? `参考图 (${detail.references.length})`
-                                                      : `搜图 (${detail.candidates.length})`}
+                                                aria-selected={editorTab === item}
+                                                aria-controls={`wb-edit-${item}`}
+                                                tabIndex={editorTab === item ? 0 : -1}
+                                                onClick={() => setEditorTab(item)}>
+                                                {EDITOR_TABS[item]}
                                             </button>
                                         ))}
                                     </div>
-                                    <div hidden={tab !== 'design'}>
+                                    <div
+                                        id='wb-edit-design'
+                                        role='tabpanel'
+                                        aria-labelledby='wb-tab-design'
+                                        hidden={editorTab !== 'design'}>
                                         <DesignPanel key={`design:${workspaceKey}`} {...panelProps!} />
                                     </div>
-                                    <div hidden={tab !== 'references'}>
+                                    <div
+                                        id='wb-edit-references'
+                                        role='tabpanel'
+                                        aria-labelledby='wb-tab-references'
+                                        hidden={editorTab !== 'references'}>
                                         <ReferencePanel key={`references:${workspaceKey}`} {...panelProps!} />
                                     </div>
-                                    <div hidden={tab !== 'search'}>
+                                    <div
+                                        id='wb-edit-search'
+                                        role='tabpanel'
+                                        aria-labelledby='wb-tab-search'
+                                        hidden={editorTab !== 'search'}>
                                         <SearchPanel key={`search:${workspaceKey}`} {...panelProps!} />
                                     </div>
-                                </aside>
-                                <section className='wb-center min-w-0 space-y-3' aria-label='作品与提示词'>
                                     <div
-                                        className='wb-tabs'
-                                        role='tablist'
-                                        onKeyDown={handleTabListKeys}
-                                        aria-label='作品或提示词'>
-                                        <button
-                                            type='button'
-                                            role='tab'
-                                            aria-selected={resolvedCenter === 'artwork'}
-                                            tabIndex={resolvedCenter === 'artwork' ? 0 : -1}
-                                            onClick={() => setCenterView('artwork')}>
-                                            作品 / 生成
-                                        </button>
-                                        <button
-                                            type='button'
-                                            role='tab'
-                                            aria-selected={resolvedCenter === 'prompt'}
-                                            tabIndex={resolvedCenter === 'prompt' ? 0 : -1}
-                                            onClick={() => setCenterView('prompt')}>
-                                            提示词{detail.prompt.stale ? ' · 已过期' : ''}
-                                            {draftKeys.some((key) => key.startsWith('prompt:')) ? ' · 未保存' : ''}
-                                        </button>
-                                    </div>
-                                    <div hidden={resolvedCenter !== 'prompt'}>
+                                        id='wb-edit-prompt'
+                                        role='tabpanel'
+                                        aria-labelledby='wb-tab-prompt'
+                                        hidden={editorTab !== 'prompt'}>
                                         <PromptPanel key={`prompt:${workspaceKey}`} {...panelProps!} />
-                                        <div className='mt-3 flex justify-end'>
-                                            <Button
-                                                disabled={busy}
-                                                onClick={() =>
-                                                    guardDrafts('打开生成确认', () => setGenerateOpen(true))
-                                                }>
-                                                生成图像
+                                    </div>
+                                    {editorTab === 'prompt' && promptReady && generationAvailable && (
+                                        <div className='flex justify-end'>
+                                            <Button disabled={busy} onClick={openGenerate}>
+                                                生成图片
                                             </Button>
                                         </div>
-                                    </div>
-                                    <div hidden={resolvedCenter !== 'artwork'}>
-                                        <StagePanel
-                                            key={`stage:${projectId}`}
-                                            {...panelProps!}
-                                            onOpenGenerate={() =>
-                                                guardDrafts('打开生成确认', () => setGenerateOpen(true))
-                                            }
-                                            onOpenRevision={openRevision}
-                                            onOpenReroll={(runId) =>
-                                                guardDrafts('打开同方案再抽确认', () => setRerollRunId(runId))
-                                            }
-                                        />
-                                    </div>
-                                </section>
-                                <aside className='wb-side wb-review space-y-3' aria-label='本轮审稿'>
-                                    <Button
-                                        variant='outline'
-                                        className='wb-desktop-toggle'
-                                        onClick={() => {
-                                            setReviewOpen(false);
-                                            setReviewClosed(true);
-                                        }}>
-                                        收起审稿
-                                    </Button>
-                                    {detail.runs[0] && (
-                                        <div className='border-wb-border bg-wb-panel rounded-lg border p-3 text-xs'>
-                                            <div className='flex items-center justify-between gap-2'>
-                                                <span className='font-medium'>最近运行</span>
-                                                <RunStatusBadge status={detail.runs[0].status} />
-                                            </div>
-                                            <p className='text-wb-muted mt-2'>
-                                                {
-                                                    detail.runs[0].items.filter((item) => item.status === 'success')
-                                                        .length
-                                                }{' '}
-                                                步成功 ·{' '}
-                                                {
-                                                    detail.runs[0].items.filter(
-                                                        (item) => item.status === 'sending' || item.status === 'pending'
-                                                    ).length
-                                                }{' '}
-                                                步未完成
-                                            </p>
-                                        </div>
                                     )}
-                                    <ReviewPanel
-                                        key={`review:${projectId}`}
-                                        {...panelProps!}
-                                        onOpenRevision={openRevision}
-                                    />
-                                </aside>
+                                </section>
                             </div>
                         </div>
+                    )}
+                    {detail && detail.project.id === projectId && (
+                        <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
+                            <DialogContent className='border-wb-border bg-wb-panel text-wb-ink sm:max-w-2xl'>
+                                <DialogHeader>
+                                    <DialogTitle>作品审稿</DialogTitle>
+                                    <DialogDescription className='sr-only'>当前作品的审稿与建议</DialogDescription>
+                                </DialogHeader>
+                                <ReviewPanel
+                                    {...panelProps!}
+                                    onOpenRevision={(versionId, suggestions) => {
+                                        setReviewOpen(false);
+                                        openRevision(versionId, suggestions);
+                                    }}
+                                />
+                            </DialogContent>
+                        </Dialog>
                     )}
                     <PaidConfirmDialog request={paidRequest} onClose={() => setPaidRequest(null)} />
                     {detail && status && generateOpen && (
@@ -801,6 +638,9 @@ export function WorkbenchApp() {
                                 <DialogTitle>工作台设置与运行详情</DialogTitle>
                                 <DialogDescription>本地界面偏好与当前服务配置。</DialogDescription>
                             </DialogHeader>
+                            <p className='text-wb-muted text-sm'>
+                                {generationAvailable ? '真实调用已启用' : '生成未启用或缺少 API Key'}
+                            </p>
                             <label className='flex items-center gap-3 text-sm'>
                                 <input
                                     type='checkbox'
@@ -808,7 +648,7 @@ export function WorkbenchApp() {
                                     onChange={(event) => updateTheme(event.target.checked)}
                                     className='accent-wb-accent'
                                 />
-                                显示主题插画
+                                显示首页插画
                             </label>
                             <dl className='border-wb-border bg-wb-subtle space-y-2 rounded border p-3 text-sm'>
                                 <div>
@@ -840,7 +680,65 @@ export function WorkbenchApp() {
                                     }}>
                                     规划设置
                                 </Button>
+                                <Link
+                                    href='/'
+                                    className='text-wb-accent inline-flex min-h-10 items-center px-2 text-sm underline underline-offset-4'
+                                    onClick={(event) => {
+                                        if (!drafts.current.size) return;
+                                        event.preventDefault();
+                                        setSettingsOpen(false);
+                                        guardDrafts('返回快捷生图', () => router.push('/'));
+                                    }}>
+                                    快捷生图
+                                </Link>
+                                {status?.localStopAvailable && (
+                                    <Button
+                                        variant='outline'
+                                        className='text-wb-error ml-auto'
+                                        onClick={() => {
+                                            setSettingsOpen(false);
+                                            setStopError(null);
+                                            setStopOpen(true);
+                                        }}>
+                                        停止服务
+                                    </Button>
+                                )}
                             </div>
+                        </DialogContent>
+                    </Dialog>
+                    <Dialog
+                        open={stopOpen}
+                        onOpenChange={(open) => {
+                            if (!stopPending) setStopOpen(open);
+                        }}>
+                        <DialogContent className='border-wb-border bg-wb-panel text-wb-ink'>
+                            <DialogHeader>
+                                <DialogTitle>停止创作工作台？</DialogTitle>
+                                <DialogDescription>
+                                    停止后，所有已打开的工作台和快捷生图页面都会断开连接。
+                                </DialogDescription>
+                            </DialogHeader>
+                            {draftKeys.length > 0 && (
+                                <p role='status' className='text-wb-warning text-sm'>
+                                    请先处理未保存的草稿（{draftLabels.join('、')}）。
+                                </p>
+                            )}
+                            {stopError && (
+                                <p role='alert' className='text-wb-error text-sm'>
+                                    {stopError}
+                                </p>
+                            )}
+                            <DialogFooter>
+                                <Button variant='outline' disabled={stopPending} onClick={() => setStopOpen(false)}>
+                                    返回
+                                </Button>
+                                <Button
+                                    variant='destructive'
+                                    disabled={stopPending || draftKeys.length > 0 || busy}
+                                    onClick={() => void stopLocalService()}>
+                                    {stopPending ? '正在停止…' : '确认停止服务'}
+                                </Button>
+                            </DialogFooter>
                         </DialogContent>
                     </Dialog>
                     <Dialog
@@ -884,43 +782,15 @@ function ProjectHome({
     onCreate: () => void;
     showTheme: boolean;
 }) {
-    const recent = projects[0];
     return (
-        <div className='wb-home'>
-            <div className='wb-home-opening'>
-                <section className='wb-home-intro'>
-                    <p className='border-wb-accent text-wb-muted mb-4 border-l-2 pl-3 text-xs'>私人创作档案</p>
-                    <h1>创作工作台</h1>
-                    <p className='text-wb-muted mt-4 mb-7 text-sm leading-relaxed'>
-                        把想画的场景，慢慢整理成属于你的作品。
-                    </p>
-                    <div className='wb-home-intro-actions space-y-3'>
-                        {recent && (
-                            <Button className='w-full' onClick={() => onSelect(recent.id)}>
-                                继续最近项目
-                            </Button>
-                        )}
-                        <Button variant={recent ? 'outline' : 'default'} className='w-full' onClick={onCreate}>
-                            新建创作
-                        </Button>
-                    </div>
-                    {recent && <p className='text-wb-muted mt-3 text-xs break-words'>{recent.name}</p>}
-                </section>
-                {showTheme ? (
-                    <ThemeArtwork />
-                ) : (
-                    <div className='border-wb-border bg-wb-panel text-wb-muted flex aspect-video items-center justify-center rounded-lg border text-sm'>
-                        主题插画已隐藏，可在设置中显示。
-                    </div>
-                )}
-            </div>
+        <div className={showTheme ? 'wb-home wb-home-opening' : 'wb-home'}>
             <section className='wb-home-projects'>
-                <div className='mb-4 flex items-center justify-between'>
-                    <h2 className='text-base font-semibold'>最近项目</h2>
-                    <span className='text-wb-muted text-xs'>保存在当前工作区</span>
+                <div className='wb-home-heading'>
+                    <h1>项目</h1>
+                    <Button onClick={onCreate}>新建创作</Button>
                 </div>
                 {projects.length === 0 ? (
-                    <p className='text-wb-muted py-4 text-sm'>还没有创作项目。从一句想法或一张参考图开始。</p>
+                    <p className='text-wb-muted py-3 text-sm'>还没有项目。</p>
                 ) : (
                     <div className='wb-project-list'>
                         {projects.map((project) => (
@@ -929,20 +799,14 @@ function ProjectHome({
                                 key={project.id}
                                 className='wb-project-item'
                                 onClick={() => onSelect(project.id)}>
-                                <span className='bg-wb-accent mt-1 h-10 w-1 shrink-0 rounded' aria-hidden='true' />
-                                <span className='min-w-0 flex-1'>
-                                    <span className='mb-2 block text-sm font-medium break-words'>{project.name}</span>
-                                    <span className='text-wb-muted flex flex-wrap items-center gap-2 text-xs'>
-                                        <span>{project.versionCount} 个版本</span>
-                                        <span>{formatTime(project.updatedAt)}</span>
-                                        {project.latestRunStatus && <RunStatusBadge status={project.latestRunStatus} />}
-                                    </span>
-                                </span>
+                                <span className='min-w-0 text-sm font-medium break-words'>{project.name}</span>
+                                <span className='text-wb-muted shrink-0 text-xs'>{project.versionCount} 个版本</span>
                             </button>
                         ))}
                     </div>
                 )}
             </section>
+            {showTheme && <ThemeArtwork />}
         </div>
     );
 }
@@ -1026,52 +890,46 @@ function CreateProjectDialog({
         <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
             <DialogContent className='border-wb-border bg-wb-panel max-w-xl'>
                 <DialogHeader>
-                    <DialogTitle>新建创作项目</DialogTitle>
-                    <DialogDescription>
-                        一句话或一张参考图即可开始。先生成单一设计方向，不自动搜索或生图。
-                    </DialogDescription>
+                    <DialogTitle>新建创作</DialogTitle>
+                    <DialogDescription>描述想画的画面，可以附一张参考图。</DialogDescription>
                 </DialogHeader>
                 <div className='space-y-2'>
                     <Textarea
                         rows={5}
                         value={text}
                         onChange={(event) => setText(event.target.value)}
-                        placeholder='例如：以我选定官图里的阿米娅为主角，侧背面自然行走。场景是一片舞台街景布景……先设计并补充需要的参考图，等我确认后再生成。'
+                        aria-label='想画什么'
+                        placeholder='例如：画一条雨后的老街，窗里透出暖光。'
                         className='border-wb-border bg-wb-panel text-xs'
                     />
-                    <div className='grid gap-2 sm:grid-cols-2'>
-                        <div className='space-y-1'>
-                            <p className='text-wb-muted text-xs'>入口</p>
+                    <label className='block space-y-1 text-sm'>
+                        <span>参考图（可选）</span>
+                        <Input
+                            type='file'
+                            accept='image/png,image/jpeg,image/webp'
+                            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                            className='border-wb-border bg-wb-panel h-9 text-xs'
+                        />
+                    </label>
+                    <details className='border-wb-border rounded-md border p-3'>
+                        <summary className='text-wb-accent cursor-pointer text-sm'>规划设置</summary>
+                        <div className='mt-2 space-y-2'>
+                            <p className='text-wb-muted text-xs'>
+                                {plannerModel} · {plannerEffort}
+                            </p>
                             <Select value={entry} onValueChange={(value) => setEntry(value as 'keyword' | 'upload')}>
-                                <SelectTrigger className='border-wb-border bg-wb-panel h-9 text-xs'>
+                                <SelectTrigger
+                                    aria-label='创作起点'
+                                    className='border-wb-border bg-wb-panel h-9 text-xs'>
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value='keyword'>关键词 / 自然语言</SelectItem>
-                                    <SelectItem value='upload'>上传图片为主</SelectItem>
+                                    <SelectItem value='keyword'>以描述为主</SelectItem>
+                                    <SelectItem value='upload'>以参考图为主</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
-                        <div className='space-y-1'>
-                            <p className='text-wb-muted text-xs'>可选参考图（PNG/JPEG/WEBP）</p>
-                            <Input
-                                type='file'
-                                accept='image/png,image/jpeg,image/webp'
-                                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                                className='border-wb-border bg-wb-panel h-9 text-xs'
-                            />
-                        </div>
-                    </div>
-                    <div className='border-wb-border bg-wb-subtle text-wb-ink rounded border p-2 text-xs'>
-                        <p>
-                            规划模型：{plannerModel} · 思考强度：{plannerEffort}
-                        </p>
-                        <p>本次调用：1 次规划（整理设计卡）</p>
-                        <p>费用：未知（规划文本模型价格未配置）</p>
-                        <p className='text-wb-muted'>
-                            不会自动搜索、分析或生图；这些动作需要你单独确认。可在“设置 → 规划设置”切换模型与强度。
-                        </p>
-                    </div>
+                    </details>
                     <label className='text-wb-warning flex items-start gap-2 text-xs'>
                         <input
                             type='checkbox'
@@ -1079,7 +937,7 @@ function CreateProjectDialog({
                             onChange={(event) => setConfirmed(event.target.checked)}
                             className='accent-wb-accent mt-0.5'
                         />
-                        <span>我确认创建项目会产生 1 次规划调用，费用未知。</span>
+                        <span>同意调用模型整理方案（1 次，费用未知）。</span>
                     </label>
                 </div>
                 {submitError && (
@@ -1093,8 +951,8 @@ function CreateProjectDialog({
                     <Button variant='outline' disabled={busy} onClick={onClose}>
                         取消
                     </Button>
-                    <Button disabled={busy || !text.trim()} onClick={() => void submit()}>
-                        {busy ? <Spinner label='整理中' /> : '创建并整理（1 次调用）'}
+                    <Button disabled={busy || !text.trim() || !confirmed} onClick={() => void submit()}>
+                        {busy ? <Spinner label='整理中' /> : '创建项目'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

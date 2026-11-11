@@ -2,10 +2,10 @@
 
 import * as React from 'react';
 
-export function ThemeArtwork({ compact = false }: { compact?: boolean }) {
+export function ThemeArtwork() {
     const [failed, setFailed] = React.useState(false);
     return (
-        <figure className={compact ? 'wb-theme-artwork' : 'wb-home-artwork'}>
+        <figure className='wb-home-artwork'>
             {failed ? (
                 <div className='border-wb-border bg-wb-subtle text-wb-muted flex aspect-video items-center justify-center rounded-lg border text-sm'>
                     主题图未载入

@@ -8,6 +8,80 @@ const repoRoot = path.resolve(import.meta.dirname, '..');
 const envLocalPath = path.join(repoRoot, '.env.local');
 const envExamplePath = path.join(repoRoot, '.env.local.example');
 const preferredPort = 3000;
+const desktopPipe = `\\\\.\\pipe\\image-workbench-${crypto.createHash('sha256').update(repoRoot.toLowerCase()).digest('hex').slice(0, 20)}`;
+
+function sendDesktopCommand(command) {
+    return new Promise((resolve, reject) => {
+        const socket = net.connect(desktopPipe);
+        socket.setTimeout(5000, () => socket.destroy(new Error('后台服务没有响应。')));
+        socket.once('connect', () => socket.end(command));
+        socket.once('error', reject);
+        socket.once('close', (hadError) => { if (!hadError) resolve(); });
+        socket.resume();
+    });
+}
+
+// WScript starts this bootstrap without a console; the detached supervisor owns
+// Web/worker and writes their output to a local, git-ignored log.
+if (process.argv.includes('--background')) {
+    const log = fs.openSync(path.join(repoRoot, '.local-server.log'), 'a');
+    const supervisor = spawn(process.execPath, [import.meta.filename, '--desktop', '--open'], {
+        cwd: repoRoot, detached: true, windowsHide: true, stdio: ['ignore', log, log]
+    });
+    await new Promise((resolve, reject) => {
+        supervisor.once('spawn', resolve);
+        supervisor.once('error', reject);
+    });
+    supervisor.unref();
+    fs.closeSync(log);
+} else if (process.argv.includes('--stop')) {
+    try {
+        await sendDesktopCommand('stop');
+    } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ECONNREFUSED') throw error;
+    }
+}
+if (process.argv.includes('--background') || process.argv.includes('--stop')) process.exit(0);
+
+let desktopServer;
+const desktopStopToken = process.argv.includes('--desktop') ? crypto.randomBytes(32).toString('hex') : '';
+const pendingDesktopCommands = [];
+let handleDesktopCommand = (command) => pendingDesktopCommands.push(command);
+if (process.argv.includes('--desktop')) {
+    desktopServer = net.createServer((socket) => {
+        let command = '';
+        socket.setTimeout(5000, () => socket.destroy());
+        socket.on('error', () => {});
+        socket.on('data', (chunk) => {
+            command += chunk.toString();
+            if (command.length > 80) {
+                socket.destroy();
+                return;
+            }
+            if (!command.endsWith('\n')) return;
+            if (command !== `web-stop:${desktopStopToken}\n`) {
+                socket.end();
+                return;
+            }
+            socket.end('accepted');
+            // Give the Web response time to reach the page before stopping Next.
+            setTimeout(() => handleDesktopCommand('web-stop'), 1000);
+        });
+        socket.on('end', () => {
+            if (command === 'open' || command === 'stop') handleDesktopCommand(command);
+        });
+    });
+    try {
+        await new Promise((resolve, reject) => {
+            desktopServer.once('error', reject);
+            desktopServer.listen(desktopPipe, resolve);
+        });
+    } catch (error) {
+        if (error.code !== 'EADDRINUSE') throw error;
+        await sendDesktopCommand('open');
+        process.exit(0);
+    }
+}
 
 function print(message) {
     console.log(`[local] ${message}`);
@@ -122,6 +196,8 @@ const env = {
     WORKBENCH_DATA_DIR: dataDir,
     WORKBENCH_WORKER_TOKEN: token,
     WORKBENCH_WORKER_URL: `http://127.0.0.1:${port}`,
+    WORKBENCH_DESKTOP_PIPE: desktopServer ? desktopPipe : '',
+    WORKBENCH_DESKTOP_STOP_TOKEN: desktopStopToken,
     // The ordinary launcher never enables an internal test provider.
     WORKBENCH_TEST_FIXTURES: '',
     WORKBENCH_TEST_STRICT_AUTHORIZATION: '',
@@ -142,10 +218,10 @@ if (proxyTarget) {
     }
 } else print('Node 代理: 未配置，将直连。');
 if (apiSwitch.toLowerCase() !== 'true') print('生成服务当前未启用：页面可打开和调参，但提交会被服务端拒绝。');
-print('模型操作使用真实 API，执行前仍需确认费用与调用范围。停止：在此窗口按 Ctrl+C。');
+print(desktopServer ? '后台运行中，可在工作台设置中停止服务。' : '停止：在此窗口按 Ctrl+C。');
 
-const child = spawn(process.execPath, [nextBin, 'dev', '--turbopack', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: repoRoot, stdio: 'inherit', env });
-const worker = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'workbench-worker.mjs')], { cwd: repoRoot, stdio: 'inherit', env });
+const child = spawn(process.execPath, [nextBin, 'dev', '--turbopack', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: repoRoot, stdio: 'inherit', env, windowsHide: true });
+const worker = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'workbench-worker.mjs')], { cwd: repoRoot, stdio: 'inherit', env, windowsHide: true });
 let shuttingDown = false;
 
 function stopChild(child) {
@@ -162,7 +238,7 @@ function stopChild(child) {
         };
         child.once('exit', done);
         if (process.platform === 'win32') {
-            spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+            spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
         } else {
             child.kill('SIGTERM');
         }
@@ -191,3 +267,38 @@ worker.on('exit', (code) => {
 });
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Desktop shortcuts can request the browser after both services are ready.
+function openWorkbench() {
+    if (process.platform !== 'win32') return;
+    void (async () => {
+        const started = Date.now();
+        const url = `http://127.0.0.1:${port}/workbench`;
+        while (!shuttingDown && Date.now() - started < 90_000) {
+            if (child.exitCode !== null || worker.exitCode !== null) return;
+            try {
+                const response = await fetch(`http://127.0.0.1:${port}/api/workbench/status`, {
+                    signal: AbortSignal.timeout(2000)
+                });
+                const data = response.ok ? await response.json() : null;
+                if (Date.parse(data?.status?.worker?.lastTickAt ?? '') >= started) {
+                    const browser = spawn('explorer.exe', [url], { stdio: 'ignore', windowsHide: true });
+                    browser.on('error', () => print(`浏览器未能打开，请手动访问 ${url}`));
+                    browser.unref();
+                    print(`已请求浏览器打开工作台：${url}`);
+                    return;
+                }
+            } catch {
+                // The web server or worker is still starting.
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        if (!shuttingDown) print(`启动尚未就绪，请查看启动日志；工作台地址：${url}`);
+    })();
+}
+handleDesktopCommand = (command) => {
+    if (command === 'stop' || command === 'web-stop') shutdown(command === 'web-stop' ? '工作台停止指令' : '本机停止指令');
+    else if (!shuttingDown) openWorkbench();
+};
+for (const command of pendingDesktopCommands) handleDesktopCommand(command);
+if (process.argv.includes('--open') && !shuttingDown) openWorkbench();

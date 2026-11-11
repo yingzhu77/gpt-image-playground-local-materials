@@ -1426,7 +1426,7 @@ export function hasActiveRuns(): boolean {
         .prepare(
             `SELECT COUNT(*) AS c FROM runs r
              WHERE r.status IN ('queued', 'running')
-                OR EXISTS (SELECT 1 FROM run_items i WHERE i.run_id = r.id AND i.status IN ('pending', 'sending'))`
+                OR EXISTS (SELECT 1 FROM run_items i WHERE i.run_id = r.id AND i.status = 'sending')`
         )
         .get() as Row;
     return num(row, 'c') > 0;

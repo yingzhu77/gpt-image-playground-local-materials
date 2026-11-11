@@ -1,5 +1,6 @@
 import { ConfigurationError } from '@/lib/server/image-api';
 import { WorkbenchError } from '@/lib/workbench/service';
+import { beginLocalRequest } from '@/lib/workbench/local-lifecycle';
 import { getWorkerToken } from '@/lib/workbench/config';
 import { FixtureWorkbenchError } from '@/lib/workbench/test-fixtures';
 import { StructuredOutputError } from '@/lib/workbench/schema';
@@ -9,6 +10,12 @@ import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+
+export function requireLocalRequestSlot() {
+    const release = beginLocalRequest();
+    if (!release) throw new WorkbenchError(503, 'LOCAL_SERVICE_STOPPING', '工作台正在停止，请重新启动后再试。');
+    return release;
+}
 
 export function workbenchJson(body: Record<string, unknown>, status = 200) {
     return NextResponse.json(body, {

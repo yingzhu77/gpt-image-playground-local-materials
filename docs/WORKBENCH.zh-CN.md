@@ -2,9 +2,19 @@
 
 > 入口：`http://127.0.0.1:<启动端口>/workbench`。旧快捷生图入口 `/`、历史、模型参数、参考图与原图下载保持原样。
 
-> 当前 UI（2026-11-09）：`/workbench` 为可返回的项目首页；`/workbench?project=<id>` 直达项目。采用雾灰白档案室、完整本地插画与作品优先布局。UI 阶段记录见第 10 节；运行配置与模拟模式移除见第 11 节；用户授权的单张重试现状见第 12 节；主题资源信息见 [本地主题说明](../public/local-theme/README.md)。
+> 当前 UI（2026-11-11）：`/workbench` 显示项目卡、新建入口和完整插画，`/workbench?project=<id>` 直达项目。已有作品的项目默认显示大图、版本缩略图和「修改这张」。通过「编辑方案」进入方案、参考图、搜图和提示词，查看审稿或更多操作时再展开对应入口。未生成的项目会指向准备提示词或生成图片。顶栏图标返回项目列表，设置内可打开快捷生图或停止后台服务。UI 历史记录见第 10 节，运行配置见第 11 节，单张重试记录见第 12 节。主题资源见 [本地主题说明](../public/local-theme/README.md)。
+
+> 本轮验证覆盖实际两版本项目的切换、对比、审稿、原图下载和付费确认入口，以及 320px、390px 的窄屏布局。隔离环境验证了未保存草稿、保存回读、首图提示词与估价、结果未知提醒及运行记录。验证未提交付费任务。
 
 ## 1. 启动
+
+Windows 桌面仅保留「创作工作台」启动快捷方式。双击后后台启动 Web 与 worker，待服务就绪后自动打开工作台。关闭浏览器后服务继续运行。需要结束时，在工作台右上角选择「设置 → 停止服务」并确认。确认前需处理当前页未保存的草稿。服务端会在有排队任务、运行中任务或正在处理的创作请求时拒绝停止。重复双击启动入口会打开已有服务。
+
+后台启动命令为 `node scripts/start-local.mjs --background`。无法打开工作台时可用 `node scripts/start-local.mjs --stop` 手动结束该项目的后台进程。日志追加到项目根目录 `.local-server.log`（Git 已忽略）。
+
+2026-11-11 在隔离数据目录通过浏览器验证草稿保护、取消停止、确认停止后 Web 与 worker 退出，并验证跨来源、缺少访问密码、任务排队和操作进行中的请求会被拒绝。暂停任务及其待处理条目保留。检查了桌面和手机首页，完整插画可见，手机无横向溢出。验证期间使用空 API Key。
+
+自动打开浏览器的命令为 `node scripts/start-local.mjs --open`（Windows）；下方原启动方式继续可用。
 
 ```bash
 # Windows：双击 start-local.cmd，或：
@@ -16,7 +26,7 @@ node scripts/start-local.mjs
 1. 选择端口（优先 3000）并启动 Next.js；
 2. 生成/读取 `.workbench-data/worker-token`；
 3. 同时启动 `scripts/workbench-worker.mjs`，由它轮询 `/api/workbench/internal/tick` 执行任务；
-4. 关闭窗口（Ctrl+C）时同时停止 Web 与 worker。
+4. 前台启动时按 `Ctrl+C` 同时停止 Web 与 worker，后台启动使用工作台设置中的停止入口。
 
 worker 与页面完全解耦：关闭或刷新页面不会重新发送已完成的请求。所有状态保存在 `.workbench-data/workbench.sqlite`，素材原图保存在 `.workbench-data/assets/`。备份时停止服务后整体复制 `.workbench-data/`（含 `-wal`/`-shm`）；恢复时放回同一路径。
 

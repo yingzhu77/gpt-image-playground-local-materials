@@ -33,6 +33,7 @@ import {
 } from '@/lib/server/metadata';
 import { ensureDir, getMetadataDir, getOutputDir, writeImageFile, writeMetadataFile } from '@/lib/server/storage';
 import { validateCustomSize } from '@/lib/size-utils';
+import { beginLocalRequest } from '@/lib/workbench/local-lifecycle';
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import type OpenAI from 'openai';
@@ -126,6 +127,10 @@ export async function POST(request: NextRequest) {
         return errorResponse(429, 'IMAGE_REQUEST_IN_FLIGHT', '已有生成或编辑请求正在处理，请等待当前请求结束。', {
             requestId
         });
+    }
+    const release = beginLocalRequest();
+    if (!release) {
+        return errorResponse(503, 'LOCAL_SERVICE_STOPPING', '工作台正在停止，请重新启动后再试。', { requestId });
     }
     imageRequestInFlight = true;
 
@@ -379,6 +384,7 @@ export async function POST(request: NextRequest) {
         });
     } finally {
         imageRequestInFlight = false;
+        release();
     }
 }
 

@@ -3,6 +3,7 @@ import {
     errorResponse,
     readJsonBody,
     requireLoopbackHost,
+    requireLocalRequestSlot,
     verifyAppPassword,
     workbenchJson
 } from '@/lib/workbench/http';
@@ -39,10 +40,12 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    let release: (() => void) | undefined;
     try {
         requireLoopbackHost(request);
         assertSameOrigin(request);
         verifyAppPassword(request);
+        release = requireLocalRequestSlot();
         const { id: projectId } = await params;
         const body = await readJsonBody(request);
         const action = typeof body.action === 'string' ? body.action : '';
@@ -236,5 +239,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         }
     } catch (error) {
         return errorResponse(error);
+    } finally {
+        release?.();
     }
 }

@@ -355,6 +355,7 @@ export type ProjectDetail = {
 };
 
 export type WorkbenchStatus = {
+    localStopAvailable: boolean;
     imageApiEnabled: boolean;
     apiKeyConfigured: boolean;
     plannerModel: string;

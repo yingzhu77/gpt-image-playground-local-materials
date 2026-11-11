@@ -3,6 +3,7 @@ import {
     errorResponse,
     readJsonBody,
     requireLoopbackHost,
+    requireLocalRequestSlot,
     verifyAppPassword,
     workbenchJson
 } from '@/lib/workbench/http';
@@ -22,10 +23,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+    let release: (() => void) | undefined;
     try {
         requireLoopbackHost(request);
         assertSameOrigin(request);
         verifyAppPassword(request);
+        release = requireLocalRequestSlot();
         const body = await readJsonBody(request);
         const text = typeof body.text === 'string' ? body.text : '';
         const entry = body.entry === 'upload' ? 'upload' : 'keyword';
@@ -42,5 +45,7 @@ export async function POST(request: NextRequest) {
         return workbenchJson({ ok: true, project });
     } catch (error) {
         return errorResponse(error);
+    } finally {
+        release?.();
     }
 }

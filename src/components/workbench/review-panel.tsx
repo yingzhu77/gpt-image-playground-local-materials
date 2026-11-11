@@ -26,7 +26,7 @@ export function ReviewPanel({
         detail.versions[detail.versions.length - 1] ??
         null;
     const review = version?.review ?? null;
-    const latestRun = detail.runs[0] ?? null;
+    const selectedRun = detail.runs.find((run) => run.id === version?.runId);
     const batchComparison =
         review?.comparison ??
         (version
@@ -201,35 +201,35 @@ export function ReviewPanel({
                     </div>
                 )}
             </Section>
-            <Section title='本次快照' description='确认后的记录，后续草稿修改不会改变它。'>
-                {latestRun ? (
+            <Section title='这张图的生成设置'>
+                {selectedRun ? (
                     <div className='text-wb-muted space-y-3 text-xs leading-relaxed'>
                         <div className='flex flex-wrap items-center gap-2'>
-                            <RunStatusBadge status={latestRun.status} />
-                            <span>{latestRun.snapshot.params.imageCount} 张 · 真实调用</span>
+                            <RunStatusBadge status={selectedRun.status} />
+                            <span>{selectedRun.snapshot.params.imageCount} 张 · 真实调用</span>
                         </div>
                         <p className='text-wb-ink text-sm'>
                             图片估算 $
-                            {latestRun.snapshot.estimate.estimatedImageUsd === null
+                            {selectedRun.snapshot.estimate.estimatedImageUsd === null
                                 ? '未知'
-                                : latestRun.snapshot.estimate.estimatedImageUsd.toFixed(4)}{' '}
+                                : selectedRun.snapshot.estimate.estimatedImageUsd.toFixed(4)}{' '}
                             · 审稿费用未知
                         </p>
                         <details>
                             <summary className='text-wb-accent cursor-pointer'>查看模型、参数与提示词</summary>
                             <div className='mt-3 space-y-2'>
                                 <p>
-                                    模型：{latestRun.snapshot.params.model} · {latestRun.snapshot.params.size} ·{' '}
-                                    {latestRun.snapshot.params.quality}
+                                    模型：{selectedRun.snapshot.params.model} · {selectedRun.snapshot.params.size} ·{' '}
+                                    {selectedRun.snapshot.params.quality}
                                 </p>
                                 <p>
-                                    审稿：{latestRun.snapshot.review.enabled ? '是' : '否'}（
-                                    {latestRun.snapshot.review.model}）
+                                    审稿：{selectedRun.snapshot.review.enabled ? '是' : '否'}（
+                                    {selectedRun.snapshot.review.model}）
                                 </p>
                                 <p>
                                     参考顺序：
-                                    {latestRun.snapshot.references.length > 0
-                                        ? latestRun.snapshot.references
+                                    {selectedRun.snapshot.references.length > 0
+                                        ? selectedRun.snapshot.references
                                               .map(
                                                   (ref) =>
                                                       `${ref.position + 1}.${REFERENCE_PURPOSE_LABELS[ref.purpose]}`
@@ -239,14 +239,14 @@ export function ReviewPanel({
                                 </p>
                                 <p>
                                     锁定项：
-                                    {latestRun.snapshot.lockedFields.length > 0
-                                        ? latestRun.snapshot.lockedFields
+                                    {selectedRun.snapshot.lockedFields.length > 0
+                                        ? selectedRun.snapshot.lockedFields
                                               .map((field) => DESIGN_FIELD_LABELS[field])
                                               .join('、')
                                         : '无'}
                                 </p>
                                 <pre className='bg-wb-subtle text-wb-ink max-h-80 overflow-auto rounded-md p-3 font-sans text-sm leading-relaxed break-words whitespace-pre-wrap'>
-                                    {latestRun.snapshot.prompt}
+                                    {selectedRun.snapshot.prompt}
                                 </pre>
                             </div>
                         </details>
