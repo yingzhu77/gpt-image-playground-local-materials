@@ -719,6 +719,20 @@ async function main() {
         check('concurrent requests save one image', (await countOutputImages()) === imagesBefore + 1);
         await setScenario({ usage: 'present' });
 
+        // Simulate an old history batch with a present, missing and undeletable file.
+        await fs.copyFile(path.join(fixtureDir, 'default.png'), path.join(outputDir, 'delete-ok.png'));
+        await fs.mkdir(path.join(outputDir, 'delete-blocked.png'));
+        const deleted = await fetch(`${baseUrl}/api/image-delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filenames: ['delete-ok.png', 'delete-absent.png', 'delete-blocked.png'] })
+        });
+        const deletion = await deleted.json();
+        check('partial deletion reports multi-status', deleted.status === 207);
+        check('removed file reported and absent on disk', deletion.results[0].success && !fsSync.existsSync(path.join(outputDir, 'delete-ok.png')));
+        check('already absent file is distinguishable', deletion.results[1].code === 'FILE_NOT_FOUND');
+        check('failed file remains available to retry', !deletion.results[2].success && !deletion.results[2].code && fsSync.existsSync(path.join(outputDir, 'delete-blocked.png')));
+
         await stopServer(mockSession);
         mockSession = null;
 

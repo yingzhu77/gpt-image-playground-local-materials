@@ -371,6 +371,15 @@ async function main() {
         // ---------- Project A + design card + locks + manual prompt ----------
         const projectA = await createProject(baseUrl, CASE_A, 'keyword');
         const projectAId = projectA.project.id;
+        const newSummary = (await api(baseUrl, '/api/workbench/projects')).json.projects.find((p) => p.id === projectAId);
+        checkEqual('new project summary matches empty detail', newSummary, projectA.project);
+        const emptyForm = new FormData();
+        emptyForm.append('file', new File([], 'empty.png', { type: 'image/png' }));
+        const invalidUpload = await fetch(`${baseUrl}/api/workbench/projects/${projectAId}/upload`, {
+            method: 'POST', headers: { origin: baseUrl }, body: emptyForm
+        });
+        check('empty attachment is a correctable upload error', invalidUpload.status === 422 && (await invalidUpload.json()).code === 'EMPTY_FILE');
+        check('project survives attachment failure', (await detail(baseUrl, projectAId)).project.id === projectAId);
         check('case A project created', !!projectAId);
         check('case A design has subject', projectA.design.subject.includes('阿米娅'), projectA.design.subject);
         check('case A missing references are explicit', projectA.design.missingReferences.length >= 3, JSON.stringify(projectA.design.missingReferences));
@@ -736,6 +745,8 @@ async function main() {
         const revised = detailA.versions.find((version) => version.parentVersionId === versionA.id);
         check('revision creates child version', !!revised && revised.label === `${versionA.label}1`, revised?.label);
         check('original versions remain', detailA.versions.some((version) => version.id === versionA.id) && detailA.versions.length === 3);
+        const updatedSummary = (await api(baseUrl, '/api/workbench/projects')).json.projects.find((p) => p.id === projectAId);
+        checkEqual('list counts and last run status match populated detail', updatedSummary, detailA.project);
         const revisionLog = readMockLog().at(-1);
         check('revision uses selected version as edit base', revisionLog?.image_filenames?.[0]?.startsWith(`00-base-${versionA.label}-`), JSON.stringify(revisionLog?.image_filenames));
         check('revision prompt contains change point', revisionLog?.prompt?.includes('本次定向修订') && revisionLog?.prompt?.includes('把背景木支架的细节对比降低'));

@@ -17,6 +17,7 @@ type FileDeletionResult = {
     filename: string;
     success: boolean;
     error?: string;
+    code?: 'FILE_NOT_FOUND';
 };
 
 export async function POST(request: NextRequest) {
@@ -24,12 +25,13 @@ export async function POST(request: NextRequest) {
 
     let requestBody: DeleteRequestBody;
     try {
-        // Clone the request to read the body for auth, then allow the original request to be read again
-        const clonedRequest = request.clone();
-        const tempBodyForAuth = await clonedRequest.json();
+        requestBody = await request.json();
+        if (!requestBody || typeof requestBody !== 'object') {
+            return NextResponse.json({ error: 'Expected a JSON object.' }, { status: 400 });
+        }
 
         if (process.env.APP_PASSWORD) {
-            const clientPasswordHash = tempBodyForAuth.passwordHash as string | null;
+            const clientPasswordHash = requestBody.passwordHash;
 
             if (!clientPasswordHash) {
                 console.error('Missing password hash for delete operation.');
@@ -41,8 +43,6 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ error: 'Unauthorized: Invalid password.' }, { status: 401 });
             }
         }
-        // Now read the original request body for processing
-        requestBody = await request.json();
     } catch (e) {
         console.error('Error parsing request body for /api/image-delete:', e);
         return NextResponse.json({ error: 'Invalid request body: Must be JSON.' }, { status: 400 });
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
         } catch (error: unknown) {
             console.error(`Error deleting image ${filepath}:`, error);
             if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-                deletionResults.push({ filename, success: false, error: 'File not found.' });
+                deletionResults.push({ filename, success: false, code: 'FILE_NOT_FOUND', error: 'File not found.' });
             } else {
                 deletionResults.push({ filename, success: false, error: 'Failed to delete file.' });
             }

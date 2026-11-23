@@ -430,28 +430,21 @@ function mapProject(row: Row): ProjectSummary {
         baselineVersionId: nullableText(row, 'baseline_version_id'),
         createdAt: text(row, 'created_at'),
         updatedAt: text(row, 'updated_at'),
-        latestRunStatus: null,
-        runCount: 0,
-        versionCount: 0
+        latestRunStatus: nullableText(row, 'latest_status') as RunStatus | null,
+        runCount: num(row, 'run_count'),
+        versionCount: num(row, 'version_count')
     };
 }
 
 export function listProjects(): ProjectSummary[] {
-    const db = sqlite();
-    const rows = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all() as Row[];
-    return rows.map((row) => {
-        const project = mapProject(row);
-        const run = db
-            .prepare('SELECT status FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1')
-            .get(project.id) as Row | undefined;
-        project.latestRunStatus = run ? (text(run, 'status') as RunStatus) : null;
-        project.runCount = num(db.prepare('SELECT COUNT(*) AS c FROM runs WHERE project_id = ?').get(project.id) as Row, 'c');
-        project.versionCount = num(
-            db.prepare('SELECT COUNT(*) AS c FROM versions WHERE project_id = ?').get(project.id) as Row,
-            'c'
-        );
-        return project;
-    });
+    const rows = sqlite().prepare(`
+        SELECT p.id, p.name, p.entry, p.mock, p.design_version, p.baseline_version_id, p.created_at, p.updated_at,
+               (SELECT status FROM runs WHERE project_id = p.id ORDER BY created_at DESC LIMIT 1) AS latest_status,
+               (SELECT COUNT(*) FROM runs WHERE project_id = p.id) AS run_count,
+               (SELECT COUNT(*) FROM versions WHERE project_id = p.id) AS version_count
+        FROM projects p ORDER BY p.updated_at DESC
+    `).all() as Row[];
+    return rows.map(mapProject);
 }
 
 export function getProjectData(projectId: string): StoredProject | null {

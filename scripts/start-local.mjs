@@ -268,20 +268,21 @@ worker.on('exit', (code) => {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// Desktop shortcuts can request the browser after both services are ready.
+// A long-running job can keep the worker inside one tick for several minutes.
+// Opening the UI only requires a responsive workbench on this supervisor's port.
 function openWorkbench() {
     if (process.platform !== 'win32') return;
     void (async () => {
         const started = Date.now();
         const url = `http://127.0.0.1:${port}/workbench`;
         while (!shuttingDown && Date.now() - started < 90_000) {
-            if (child.exitCode !== null || worker.exitCode !== null) return;
+            if (child.exitCode !== null) return;
             try {
                 const response = await fetch(`http://127.0.0.1:${port}/api/workbench/status`, {
                     signal: AbortSignal.timeout(2000)
                 });
                 const data = response.ok ? await response.json() : null;
-                if (Date.parse(data?.status?.worker?.lastTickAt ?? '') >= started) {
+                if (typeof data?.status?.worker?.tokenConfigured === 'boolean') {
                     const browser = spawn('explorer.exe', [url], { stdio: 'ignore', windowsHide: true });
                     browser.on('error', () => print(`浏览器未能打开，请手动访问 ${url}`));
                     browser.unref();
@@ -289,7 +290,7 @@ function openWorkbench() {
                     return;
                 }
             } catch {
-                // The web server or worker is still starting.
+                // The web server is still starting.
             }
             await new Promise((resolve) => setTimeout(resolve, 1000));
         }

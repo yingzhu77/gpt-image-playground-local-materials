@@ -65,6 +65,8 @@ export function WorkbenchApp() {
     const [projectId, setProjectId] = React.useState<string | null>(null);
     const [detail, setDetail] = React.useState<ProjectDetail | null>(null);
     const [loading, setLoading] = React.useState(true);
+    const [listAttempt, setListAttempt] = React.useState(0);
+    const [readFailure, setReadFailure] = React.useState<string | null>(null);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [notice, setNotice] = React.useState<string | null>(null);
@@ -119,6 +121,7 @@ export function WorkbenchApp() {
         setEditorTab('design');
         setReviewOpen(false);
         setError(null);
+        setReadFailure(null);
         window.history.replaceState({}, '', id ? `/workbench?project=${encodeURIComponent(id)}` : '/workbench');
     }, []);
     function discardDrafts() {
@@ -186,14 +189,23 @@ export function WorkbenchApp() {
             if (currentProjectRef.current !== projectId || readEpoch.current !== epoch) return;
             setDetail(response.project);
             setStatus(response.project.status);
+            setReadFailure(null);
+            const { project, versions } = response.project;
+            setProjects((current) => current.map((item) => (item.id === project.id ? project : item)));
+            setSelectedVersionId((current) =>
+                versions.some((version) => version.id === current)
+                    ? current
+                    : (versions.find((version) => version.isBaseline)?.id ?? versions.at(-1)?.id ?? null)
+            );
         } catch (refreshError) {
             if (currentProjectRef.current === projectId && readEpoch.current === epoch)
-                setError(refreshError instanceof Error ? refreshError.message : '读取项目失败。');
+                setReadFailure(refreshError instanceof Error ? refreshError.message : '读取项目失败。');
         }
     }, [projectId]);
     React.useEffect(() => {
         let cancelled = false;
-        void (async () => {
+        queueMicrotask(async () => {
+            if (cancelled) return;
             try {
                 const response = await workbenchFetch<{ projects: ProjectSummary[]; status: WorkbenchStatus }>(
                     '/api/workbench/projects'
@@ -207,49 +219,38 @@ export function WorkbenchApp() {
                     setProjectId(requested);
                 } else if (requested) setError('该项目不可用，请从项目列表选择。');
             } catch (loadError) {
-                if (!cancelled) setError(loadError instanceof Error ? loadError.message : '读取项目列表失败。');
+                if (!cancelled) setReadFailure(loadError instanceof Error ? loadError.message : '读取项目列表失败。');
             } finally {
                 if (!cancelled) setLoading(false);
             }
-        })();
+        });
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [listAttempt]);
     React.useEffect(() => {
-        if (!projectId) return;
         let cancelled = false;
-        const epoch = ++readEpoch.current;
-        void (async () => {
-            try {
-                const response = await workbenchFetch<{ project: ProjectDetail }>(
-                    `/api/workbench/projects/${projectId}`
-                );
-                if (cancelled || currentProjectRef.current !== projectId || readEpoch.current !== epoch) return;
-                setDetail(response.project);
-                setStatus(response.project.status);
-                setSelectedVersionId((current) =>
-                    current && response.project.versions.some((version) => version.id === current)
-                        ? current
-                        : (response.project.versions.find((version) => version.isBaseline)?.id ??
-                          response.project.versions.at(-1)?.id ??
-                          null)
-                );
-            } catch (loadError) {
-                if (!cancelled && currentProjectRef.current === projectId && readEpoch.current === epoch)
-                    setError(loadError instanceof Error ? loadError.message : '读取项目失败。');
-            }
-        })();
+        queueMicrotask(() => {
+            if (!cancelled) void refresh();
+        });
         return () => {
             cancelled = true;
+            readEpoch.current += 1;
         };
-    }, [projectId]);
+    }, [refresh]);
     React.useEffect(() => {
         if (!detail || !isActiveRun(detail)) return;
-        const timer = setInterval(() => {
-            void refresh();
-        }, 2500);
-        return () => clearInterval(timer);
+        let cancelled = false;
+        let timer: ReturnType<typeof setTimeout>;
+        async function poll() {
+            await refresh();
+            if (!cancelled) timer = setTimeout(poll, 2500);
+        }
+        timer = setTimeout(poll, 2500);
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
     }, [detail, refresh]);
     React.useEffect(() => {
         if (!notice) return;
@@ -312,19 +313,28 @@ export function WorkbenchApp() {
         if (id === projectId) return;
         guardDrafts(id ? '切换项目' : '返回项目首页', () => applyNavigation(id));
     }
-    async function handleProjectCreated(project: ProjectDetail) {
+    function handleProjectCreated(project: ProjectDetail, attachmentWarning?: string) {
         readEpoch.current += 1;
         currentProjectRef.current = project.project.id;
         setDetail(project);
         setStatus(project.status);
         setProjectId(project.project.id);
-        setEditorOpen(false);
-        setEditorTab('design');
+        setEditorOpen(!!attachmentWarning);
+        setEditorTab(attachmentWarning ? 'references' : 'design');
+        setError(attachmentWarning ?? null);
+        setReadFailure(null);
         setReviewOpen(false);
         setSelectedVersionId(project.versions[0]?.id ?? null);
         window.history.replaceState({}, '', `/workbench?project=${encodeURIComponent(project.project.id)}`);
-        const response = await workbenchFetch<{ projects: ProjectSummary[] }>('/api/workbench/projects');
-        setProjects(response.projects);
+        setProjects((current) => [project.project, ...current.filter((item) => item.id !== project.project.id)]);
+    }
+    function retryRead() {
+        setReadFailure(null);
+        if (projectId) void refresh();
+        else {
+            setLoading(true);
+            setListAttempt((attempt) => attempt + 1);
+        }
     }
     function updateTheme(visible: boolean) {
         setShowTheme(visible);
@@ -410,6 +420,12 @@ export function WorkbenchApp() {
                         </Button>
                     </header>
                     <div className='wb-feedback' aria-live='polite'>
+                        {readFailure && (
+                            <div role='alert' className='border-wb-error bg-wb-error-soft text-wb-error flex items-center justify-between gap-3 rounded border px-3 py-2 text-sm'>
+                                <span>{projectId ? '未能读取项目' : '未能读取项目列表'} · {readFailure}</span>
+                                <Button variant='outline' className='shrink-0' onClick={retryRead}>重新读取</Button>
+                            </div>
+                        )}
                         {error && (
                             <div
                                 role='alert'
@@ -433,7 +449,7 @@ export function WorkbenchApp() {
                             <Spinner label='读取工作台…' />
                         </div>
                     ) : !projectId ? (
-                        <ProjectHome
+                        status && <ProjectHome
                             projects={projects}
                             onSelect={navigateProject}
                             onCreate={() => setCreateOpen(true)}
@@ -441,7 +457,7 @@ export function WorkbenchApp() {
                         />
                     ) : !detail ? (
                         <div className='flex min-h-[60vh] flex-col items-center justify-center gap-4'>
-                            <Spinner label='读取项目…' />
+                            {!readFailure && <Spinner label='读取项目…' />}
                             <Button variant='outline' onClick={() => navigateProject(null)}>
                                 返回项目首页
                             </Button>
@@ -823,7 +839,7 @@ function CreateProjectDialog({
     status: WorkbenchStatus | null;
     plannerModel: string;
     plannerEffort: string;
-    onCreated: (project: ProjectDetail) => Promise<void>;
+    onCreated: (project: ProjectDetail, attachmentWarning?: string) => void;
     setError: (message: string | null) => void;
 }) {
     const [text, setText] = React.useState('');
@@ -868,14 +884,16 @@ function CreateProjectDialog({
                 })
             });
             let project = created.project;
+            let attachmentWarning: string | undefined;
             if (file) {
-                await uploadProjectFile(project.project.id, file);
-                const refreshed = await workbenchFetch<{ project: ProjectDetail }>(
-                    `/api/workbench/projects/${project.project.id}`
-                );
-                project = refreshed.project;
+                try {
+                    project = (await uploadProjectFile(project.project.id, file)).project;
+                } catch (uploadError) {
+                    const reason = uploadError instanceof Error ? uploadError.message : '上传未确认';
+                    attachmentWarning = `项目已创建。请在参考图中核对「${file.name}」，缺少时可单独补传。${reason}`;
+                }
             }
-            await onCreated(project);
+            onCreated(project, attachmentWarning);
             onClose();
         } catch (error) {
             const message = error instanceof Error ? error.message : '创建项目失败。';
@@ -973,7 +991,7 @@ function ForkProjectDialog({
     status: WorkbenchStatus | null;
     plannerModel: string;
     plannerEffort: string;
-    onCreated: (project: ProjectDetail) => Promise<void>;
+    onCreated: (project: ProjectDetail) => void;
     setError: (message: string | null) => void;
 }) {
     const [instruction, setInstruction] = React.useState('');
@@ -1002,7 +1020,7 @@ function ForkProjectDialog({
                 plannerModel,
                 reasoningEffort: plannerEffort
             });
-            await onCreated(response.project);
+            onCreated(response.project);
             onClose();
         } catch (error) {
             const message = error instanceof Error ? error.message : '创建新方向失败。';

@@ -5,6 +5,7 @@ import { getWorkerToken } from '@/lib/workbench/config';
 import { FixtureWorkbenchError } from '@/lib/workbench/test-fixtures';
 import { StructuredOutputError } from '@/lib/workbench/schema';
 import { SafeDownloadError } from '@/lib/workbench/fetcher';
+import { AssetValidationError } from '@/lib/workbench/assets';
 import { SearchProviderError } from '@/lib/workbench/search';
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
@@ -41,6 +42,12 @@ export function assertSameOrigin(request: NextRequest) {
     }
 }
 
+function equalCredentials(actual: string, expected: string) {
+    const supplied = Buffer.from(actual, 'utf8');
+    const required = Buffer.from(expected, 'utf8');
+    return supplied.length === required.length && crypto.timingSafeEqual(supplied, required);
+}
+
 export function verifyAppPassword(request: NextRequest) {
     const password = process.env.APP_PASSWORD;
     if (!password) return;
@@ -49,11 +56,7 @@ export function verifyAppPassword(request: NextRequest) {
         throw new WorkbenchError(401, 'APP_AUTH_REQUIRED', '需要访问密码。请在旧入口或工作台重新输入密码。');
     }
     const expected = crypto.createHash('sha256').update(password).digest('hex');
-    const actual = header.trim();
-    if (
-        actual.length !== expected.length ||
-        !crypto.timingSafeEqual(Buffer.from(actual, 'utf8'), Buffer.from(expected, 'utf8'))
-    ) {
+    if (!equalCredentials(header.trim(), expected)) {
         throw new WorkbenchError(401, 'APP_AUTH_FAILED', '访问密码不正确。');
     }
 }
@@ -64,10 +67,7 @@ export function requireWorkerToken(request: NextRequest) {
         throw new WorkbenchError(503, 'WORKER_TOKEN_MISSING', '服务端尚未配置 worker token。');
     }
     const provided = request.headers.get('x-worker-token') ?? '';
-    if (
-        provided.length !== token.length ||
-        !crypto.timingSafeEqual(Buffer.from(provided, 'utf8'), Buffer.from(token, 'utf8'))
-    ) {
+    if (!equalCredentials(provided, token)) {
         throw new WorkbenchError(401, 'WORKER_TOKEN_INVALID', 'worker token 无效。');
     }
     const host = request.headers.get('host') ?? '';
@@ -126,6 +126,10 @@ export function errorResponse(error: unknown) {
     }
     if (error instanceof SafeDownloadError) {
         return workbenchJson({ error: error.message, code: error.code }, 422);
+    }
+    if (error instanceof AssetValidationError) {
+        const status = error.code === 'ASSET_NOT_FOUND' ? 404 : 422;
+        return workbenchJson({ error: error.message, code: error.code }, status);
     }
     if (error instanceof SearchProviderError) {
         return workbenchJson(

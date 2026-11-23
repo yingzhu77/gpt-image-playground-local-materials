@@ -341,10 +341,6 @@ export default function HomePage() {
     }, []);
 
     React.useEffect(() => {
-        localStorage.setItem('imageGenSkipDeleteConfirm', String(skipDeleteConfirmation));
-    }, [skipDeleteConfirmation]);
-
-    React.useEffect(() => {
         const handlePaste = (event: ClipboardEvent) => {
             if (mode !== 'edit' || !event.clipboardData) {
                 return;
@@ -852,6 +848,7 @@ export default function HomePage() {
 
             const { images: imagesInEntry, storageModeUsed, timestamp } = item;
             const filenamesToDelete = imagesInEntry.map((img) => img.filename);
+            let removed = new Set(filenamesToDelete);
 
             try {
                 if (storageModeUsed === 'indexeddb') {
@@ -879,11 +876,23 @@ export default function HomePage() {
                     if (!response.ok) {
                         throw new Error(result.error || `API deletion failed with status ${response.status}`);
                     }
+                    const results: { filename: string; success: boolean; code?: string }[] = result.results;
+                    removed = new Set(
+                        results.filter((file) => file.success || file.code === 'FILE_NOT_FOUND').map((file) => file.filename)
+                    );
+                    const remaining = imagesInEntry.filter((image) => !removed.has(image.filename));
+                    if (remaining.length) setError(`${remaining.length} 张图片未能删除，已保留在历史记录中，可稍后重试。`);
                 }
 
-                setHistory((prevHistory) => prevHistory.filter((h) => h.timestamp !== timestamp));
+                setHistory((prevHistory) =>
+                    prevHistory.flatMap((entry) => {
+                        if (entry.timestamp !== timestamp) return [entry];
+                        const images = entry.images.filter((image) => !removed.has(image.filename));
+                        return images.length ? [{ ...entry, images }] : [];
+                    })
+                );
                 setLatestImageBatch((prev) =>
-                    prev && prev.some((img) => filenamesToDelete.includes(img.filename)) ? null : prev
+                    prev && prev.some((img) => removed.has(img.filename)) ? null : prev
                 );
             } catch (e: unknown) {
                 console.error('Error during item deletion:', e);
@@ -911,6 +920,11 @@ export default function HomePage() {
         if (itemToDeleteConfirm) {
             executeDeleteItem(itemToDeleteConfirm);
             setSkipDeleteConfirmation(dialogCheckboxStateSkipConfirm);
+            try {
+                localStorage.setItem('imageGenSkipDeleteConfirm', String(dialogCheckboxStateSkipConfirm));
+            } catch {
+                // The preference still applies for this session.
+            }
         }
     }, [itemToDeleteConfirm, executeDeleteItem, dialogCheckboxStateSkipConfirm]);
 

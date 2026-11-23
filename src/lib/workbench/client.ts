@@ -1,5 +1,7 @@
 'use client';
 
+import type { AssetMeta, ProjectDetail } from '@/lib/workbench/types';
+
 export type WorkbenchApiError = {
     error: string;
     code: string;
@@ -11,8 +13,14 @@ export async function workbenchFetch<T>(path: string, init?: RequestInit): Promi
     if (!headers.has('content-type') && init?.body && typeof init.body === 'string') {
         headers.set('content-type', 'application/json');
     }
-    const passwordHash = typeof window !== 'undefined' ? window.localStorage.getItem('clientPasswordHash') : null;
-    if (passwordHash) headers.set('x-app-password-hash', passwordHash);
+    if (typeof window !== 'undefined') {
+        try {
+            const passwordHash = window.localStorage.getItem('clientPasswordHash');
+            if (passwordHash) headers.set('x-app-password-hash', passwordHash);
+        } catch {
+            // The server still checks access when browser storage is unavailable.
+        }
+    }
     const response = await fetch(path, {
         ...init,
         headers,
@@ -29,6 +37,7 @@ export async function workbenchFetch<T>(path: string, init?: RequestInit): Promi
         const payload = (body ?? {}) as Partial<WorkbenchApiError>;
         throw new Error(payload.error || `请求失败（HTTP ${response.status}）`);
     }
+    if (body === null || typeof body !== 'object') throw new Error('服务返回的数据无法读取。');
     return body as T;
 }
 
@@ -42,10 +51,10 @@ export function projectAction<T extends Record<string, unknown>>(
     });
 }
 
-export function uploadProjectFile(projectId: string, file: File): Promise<Record<string, unknown>> {
+export function uploadProjectFile(projectId: string, file: File) {
     const formData = new FormData();
     formData.append('file', file);
-    return workbenchFetch<Record<string, unknown>>(`/api/workbench/projects/${projectId}/upload`, {
+    return workbenchFetch<{ asset: AssetMeta; project: ProjectDetail }>(`/api/workbench/projects/${projectId}/upload`, {
         method: 'POST',
         body: formData
     });
